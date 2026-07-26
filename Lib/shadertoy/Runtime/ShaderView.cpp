@@ -5,7 +5,6 @@
 namespace Shadertoy
 {
 ShaderView::ShaderView(Program& programToRun)
-    : program(programToRun)
 {
     // A fullscreen shader has no geometric edges for multisampling to soften, so
     // the view's default 4x MSAA would shade every pixel four times over for an
@@ -15,7 +14,16 @@ ShaderView::ShaderView(Program& programToRun)
     setHandlesMouseEvents(true);
     setContinuous(true);
 
-    program.prepareFullscreen(sampleCount());
+    setProgram(programToRun);
+}
+
+void ShaderView::setProgram(Program& programToRun)
+{
+    program = &programToRun;
+    buffers.clear();
+
+    program->prepareFullscreen(sampleCount());
+    restart();
 }
 
 void ShaderView::addBuffer(Buffer& buffer)
@@ -28,6 +36,11 @@ void ShaderView::restart()
     elapsed = 0.0;
     frameDelta = 0.0;
     frameIndex = 0;
+
+    // What a buffer accumulated outlives its clock, so a shader that feeds back
+    // into itself would carry on from where it was however far iTime rewound.
+    for (auto* buffer: buffers)
+        buffer->clear();
 }
 
 void ShaderView::update(Threads::FrameTime time)
@@ -73,11 +86,11 @@ void ShaderView::render(GPU::Frame& frame)
     for (auto* buffer: buffers)
         buffer->swap();
 
-    publishUniforms(program, bounds, scale);
-    program.refreshChannels();
+    publishUniforms(*program, bounds, scale);
+    program->refreshChannels();
 
     auto pass = frame.beginPass({backgroundColor});
-    pass.draw(program);
+    pass.draw(*program);
 }
 
 void ShaderView::mouseDown(const Graphics::MouseEvent& event)

@@ -15,6 +15,12 @@ class ShaderView : public GPU::GPUView
 public:
     explicit ShaderView(Program& programToRun);
 
+    // Points the view at a different program, which is what a gallery does when
+    // it moves to the next shader. The buffers go with it - a buffer belongs to
+    // the shader that reads it rather than to the view - and the clock rewinds,
+    // since a shader that accumulates has nothing yet to accumulate from.
+    void setProgram(Program& programToRun);
+
     // Adds an off-screen pass that runs before the image - Buffer A through D,
     // in the order they are added. The buffer must outlive the view, which the
     // usual shape gives for free: the programs, the buffers and the view are
@@ -48,7 +54,7 @@ private:
     // resolution however many buffers read them.
     void publishUniforms(Program& target, Graphics::Rect bounds, float scale);
 
-    Program& program;
+    Program* program = nullptr;
 
     Vector<Buffer*> buffers;
 

@@ -117,6 +117,35 @@ auto tBufferAccumulates = test("Buffer/theBufferReadsItsPreviousFrame") = []
     check(rightOf(later) > rightOf(first) * 2.0f);
 };
 
+// Rewinding the clock is half of restarting a shader that feeds back into
+// itself, and the half that shows. What it accumulated lives in the buffer's
+// textures rather than in iTime, so a restart that only rewound would carry on
+// from exactly where it was - and a trail that has already saturated would look
+// identical before and after.
+auto tRestartClearsTheBuffer = test("Buffer/restartClearsWhatItAccumulated") = []
+{
+    if (!GPU::Device::shared().isValid())
+        return;
+
+    auto shader = TrailShader {GPU::TextureFormat::RGBA16Float};
+    auto accumulated = shader.runFor(frames);
+
+    shader.view.restart();
+
+    auto afterRestart = shader.runFor(1);
+
+    // What one frame looks like from cold, which is what a restart should be
+    // indistinguishable from.
+    auto fresh = TrailShader {GPU::TextureFormat::RGBA16Float};
+    auto fromCold = fresh.runFor(1);
+
+    check(shader.buffer.isReady() && fresh.buffer.isReady());
+    check(accumulated.isValid() && afterRestart.isValid() && fromCold.isValid());
+
+    check(rightOf(afterRestart) < rightOf(accumulated) / 2.0f);
+    check(std::abs(rightOf(afterRestart) - rightOf(fromCold)) < 0.05f);
+};
+
 // The control, and the reason a buffer is float. The same eight frames through
 // an 8-bit buffer saturate: everything past 1 is thrown away as it is written,
 // so the float run comes back brighter, and the 8-bit one comes back flat -

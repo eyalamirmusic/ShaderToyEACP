@@ -10,11 +10,21 @@
 # files from the one id.
 #
 # This list is deliberately empty. Filling it is a choice about which shaders
-# to measure, and it belongs to whoever is doing the measuring: pick from
-# Shadertoy's own listings, and prefer breadth over fame, since what the counts
-# rank is how many shaders a gap blocks rather than how good they are.
+# to measure, and it belongs to whoever is doing the measuring: prefer breadth
+# over fame, since what the counts rank is how many shaders a gap blocks rather
+# than how good they are.
 #
-# For example:
+# Written by hand it looks like this:
 #
 #   Ms2SD1     # Seascape
 #   XsXXDn     # Creation
+#
+# Or `shadertoy-fetch --list 500` appends what the API's index hands back,
+# under a line saying where and when it came from. Everything below such a line
+# was discovered rather than chosen; deleting an id is how it stops being
+# measured, and the shaders themselves are refetched from here whenever
+# Corpus/External is empty.
+#
+# An id that stays here without ever arriving is usually not a mistake: the API
+# serves only shaders their author marked Public+API, and Corpus/External's
+# .refused file records the ones that said no.

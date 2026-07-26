@@ -16,6 +16,23 @@ target_sources(shadertoy-glsl PRIVATE
 set_default_target_setting(shadertoy-glsl)
 shadertoy_enable_unity_build(shadertoy-glsl)
 
+# Pulling Shadertoys off the API and keeping the books that a 1500-request
+# month makes necessary. It is the one library here that talks to anything, and
+# the transport is a std::function so that a test can drive the bookkeeping
+# without a key and without a socket.
+add_library(shadertoy-corpus STATIC)
+target_include_directories(shadertoy-corpus PUBLIC ${CMAKE_CURRENT_LIST_DIR}/../)
+
+# eacp-core is in the header, for the Vector the options are held in; the HTTP
+# client is not, which is what lets a test link this and never open a socket.
+target_link_libraries(shadertoy-corpus PUBLIC eacp-core PRIVATE eacp-network)
+
+target_sources(shadertoy-corpus PRIVATE
+        Corpus/Fetch.cpp)
+
+set_default_target_setting(shadertoy-corpus)
+shadertoy_enable_unity_build(shadertoy-corpus)
+
 # What a ported shader runs inside.
 add_library(shadertoy-runtime STATIC)
 target_include_directories(shadertoy-runtime PUBLIC ${CMAKE_CURRENT_LIST_DIR}/../)

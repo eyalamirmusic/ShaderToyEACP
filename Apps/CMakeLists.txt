@@ -19,3 +19,8 @@ add_subdirectory(MarchPort)
 # And the shape stage 8 opened: a Shadertoy with a buffer, from two .glsl files,
 # whose buffer reads what it left there last frame.
 add_subdirectory(TrailPort)
+
+# All of them at once, switchable: the corpus on screen rather than in a table.
+# It is also the only target that compiles every port, so a shader that converts
+# but does not compile stops this build.
+add_subdirectory(Gallery)

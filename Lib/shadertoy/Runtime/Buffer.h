@@ -80,6 +80,12 @@ public:
     // agree about which frame they are reading.
     void swap() { showing = 1 - showing; }
 
+    // Throws away what the buffer has accumulated, so the next frame starts
+    // from clearColor again. What a feedback pass carries is its contents
+    // rather than its clock, so this is the half of restarting one that
+    // rewinding iTime cannot do.
+    void clear() { needsClearing = true; }
+
     // What another pass samples: the texture this buffer published last.
     const GPU::Texture& output() const { return *textures[showing]; }
 

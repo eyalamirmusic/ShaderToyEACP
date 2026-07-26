@@ -8,6 +8,11 @@ build/Tools/Transpile/shadertoy-transpile --report Corpus/*.glsl \
     Apps/PlasmaPort/Plasma.glsl
 ```
 
+Every shader here is also compiled into `Apps/Gallery`, which draws them one at
+a time — arrow keys to move, space to restart. That is where a shader that
+converts, compiles and still does not look right gets caught, and it is the
+reason anything added here should be added to the gallery's list too.
+
 Everything here is written for this project, so it can be committed and shared
 without qualification. The wider Shadertoy corpus is a different matter — its
 default licence is CC BY-NC-SA 3.0 — so those shaders are fetched on demand from
@@ -103,7 +108,19 @@ question. What comes back lands in `Corpus/External`, which is gitignored, and
 is measured with the same report:
 
 ```bash
-export SHADERTOY_API_KEY=...            # https://www.shadertoy.com/howto#q2
-build/Tools/Corpus/shadertoy-fetch
+export SHADERTOY_API_KEY=...            # https://www.shadertoy.com/myapps
+build/Tools/Corpus/shadertoy-fetch --list 500 --sort newest
 build/Tools/Transpile/shadertoy-transpile --report Corpus/External/*.glsl
 ```
+
+`--list` is how the list gets filled without picking ids by hand: one request
+buys as many ids as it asks for, and the new ones are appended to `ids.txt`
+under a line saying where and when they came from. Draining that list is the
+expensive half - a key is worth 1500 requests a month - so a run skips what is
+already in `Corpus/External`, skips what the API has already refused, and stops
+when the month's budget is gone rather than spending it twice on the same
+shader. The books it keeps are `.quota` and `.refused` in the output directory.
+
+Most of a real list will refuse: the API serves only what its author marked
+Public+API. That is a measurement rather than a fault, and it is why the exit
+code distinguishes a refusal from a failure.

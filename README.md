@@ -71,6 +71,7 @@ Lib/shadertoy/Runtime/    Program (the Shadertoy uniform set + fullscreen pass)
                           Buffer (an off-screen pass and the pair it ping-pongs)
                           ShaderView (clock, pointer, resolution, pass order)
 Tools/Transpile/          the shadertoy-transpile CLI
+Lib/shadertoy/Corpus/     the API, and the books a 1500-request month needs
 Tools/Corpus/             shadertoy-fetch, which pulls Shadertoys by id
 Corpus/                   shaders the coverage report is measured against
                           (ids.txt names the ones that are not committed)
@@ -79,6 +80,7 @@ Apps/PlasmaPort/          the same shader, converted from GLSL at build time
 Apps/TunnelPort/          a converted port that reads a texture channel
 Apps/MarchPort/           a converted port that marches a loop with a break
 Apps/TrailPort/           two converted ports, one reading what it wrote last frame
+Apps/Gallery/             every converted port, switchable, on screen
 Tests/Glsl/               lowering and diagnostics
 Tests/Runtime/            vertex layout, uniform block layout, generated stages,
                           corpus ports compiled from their GLSL by the build, and
@@ -419,17 +421,36 @@ comes back as the prelude it is rather than as a file of its own.
 
 It is a C++ tool for the same reason everything else here is one: eacp already
 has an HTTP client and a JSON parser, so the fetcher costs one file and no
-dependency the project did not already have. It is also the one target here that
-talks to anything — the transpiler beside it reads text and writes text, and
-links neither.
+dependency the project did not already have. The fetching itself is
+`Lib/shadertoy/Corpus`, so that `Tests/Corpus` can drive it without a key and
+without a socket; `Tools/Corpus` is the command line around it, and
+`shadertoy-corpus` is the one library here that talks to anything.
 
-The list ships empty, and that is a limit worth stating plainly rather than
-hiding: the shaders behind these three capabilities were read and written out
-here rather than fetched, because shadertoy.com sits behind a bot check that no
-script gets through unattended. What the fetcher needs is a key and a machine
-the site will answer. Until it has run, the counts below still rank eighteen
-shaders written for this project — the gate is open, and nothing has walked
-through it yet.
+The list ships empty, and what stands between it and the thousands the counts
+were meant to rank is worth stating precisely, because two of the three things
+in the way are not what they look like:
+
+- **The bot check is not one of them.** shadertoy.com sits behind a Cloudflare
+  challenge that `curl` cannot pass — it answers 403 to `robots.txt` — but
+  `/api/v1/` is exempt from it, and eacp's HTTP client reaches the API on the
+  first try. An unkeyed request comes back `{"Error":"Invalid key"}`, which is
+  the API refusing a request rather than the edge refusing a client.
+- **A key needs Silver or Gold status.** Creating an app at
+  [/myapps](https://www.shadertoy.com/myapps) is refused below that, and status
+  is earned by contributing to the community over time — shaders published,
+  likes, followers, how long the account has been around. A new account cannot
+  get a key by wanting one.
+- **A key is worth 1500 requests a month.** That is the number the fetcher is
+  built around, and the reason it is bookkeeping rather than a download loop.
+  The index costs one request however many ids come back, so a month buys
+  roughly 1499 shaders — and a corpus of thousands is a few months of runs that
+  never ask twice for what they already have.
+
+Only shaders whose author marked them **Public + API** come back at all, which
+is Shadertoy's own line: their terms say Public+API content "can also be
+accessible to third party applications", and plain Public content is not
+offered to third-party tools. So the corpus is what the API serves, and
+scraping the site for the rest is not on the table.
 
 ## Using it
 
@@ -490,14 +511,45 @@ build/Tools/Transpile/shadertoy-transpile --report Corpus/*.glsl \
     Apps/PlasmaPort/Plasma.glsl
 ```
 
+Or look at it, which is a different question and one no report answers:
+
+```bash
+build/Apps/Gallery/Gallery.app/Contents/MacOS/Gallery   # arrows, space
+```
+
+Every shader in `Corpus/` is compiled into that one app, and the arrow keys walk
+through them. The report says a shader converted, and `RuntimeTests` says the
+C++ it converted to compiles and satisfies a handful of pixels; neither says the
+frame looks like the shader, and a march that stops one step early reports
+nothing, compiles, and renders something plausible. The gallery is also the only
+target that compiles every port, so a shader the transpiler is happy with and a
+C++ compiler is not fails this build rather than going unnoticed.
+
 Or measure real Shadertoys, which is what the counts were built to rank. The
 ids are committed and the shaders are not:
 
 ```bash
-export SHADERTOY_API_KEY=...            # https://www.shadertoy.com/howto#q2
+export SHADERTOY_API_KEY=...            # https://www.shadertoy.com/myapps
 build/Tools/Corpus/shadertoy-fetch      # everything in Corpus/ids.txt
 build/Tools/Transpile/shadertoy-transpile --report Corpus/External/*.glsl
 ```
+
+Filling the list is the same tool: `--list <n>` asks the API's index for ids
+and adds the new ones to `Corpus/ids.txt`, `--query <term>` searches instead of
+taking the whole index, and `--sort` and `--filter` pass the API's own
+vocabulary through — `--filter multipass` is how to go looking for the buffer
+shaders rather than the popular ones.
+
+```bash
+build/Tools/Corpus/shadertoy-fetch --list 500 --sort newest
+build/Tools/Corpus/shadertoy-fetch --list 500 --ids-only   # one request, no shaders
+```
+
+A run never asks for a shader it already has, and never asks twice for one the
+API refused — `.quota` and `.refused` beside the shaders are what hold that
+line between runs, and `--budget` is what a month is allowed to spend. When the
+budget runs out the rest stay on the list, which is how a corpus larger than
+one month's requests gets built at all.
 
 ## The coverage table
 
@@ -1109,8 +1161,10 @@ Outputs:
 - `build/Apps/TunnelPort/TunnelPort.app` — a transpiled port reading a channel
 - `build/Apps/MarchPort/MarchPort.app` — a transpiled port marching a loop
 - `build/Apps/TrailPort/TrailPort.app` — two transpiled ports, one a feedback buffer
+- `build/Apps/Gallery/Gallery.app` — the whole corpus, one shader at a time
 - `build/Tools/Corpus/shadertoy-fetch` — the corpus fetcher
-- `build/Tests/Glsl/GlslTests`, `build/Tests/Runtime/RuntimeTests`
+- `build/Tests/Glsl/GlslTests`, `build/Tests/Runtime/RuntimeTests`,
+  `build/Tests/Corpus/CorpusTests`
 
 ## On licensing the corpus
 
@@ -1122,10 +1176,21 @@ are committed here.
 
 Since stage 9 that is machinery rather than a policy: `Corpus/ids.txt` is the
 list, `shadertoy-fetch` turns it into files under `Corpus/External`, and
-`.gitignore` keeps that directory out. The fetcher needs a key of your own from
-[Shadertoy's API page](https://www.shadertoy.com/howto#q2) in
-`SHADERTOY_API_KEY` — the API refuses an unkeyed request, and the site's bot
-protection refuses an unattended one whatever key it carries.
+`.gitignore` keeps that directory out. The fetcher needs a key of your own in
+`SHADERTOY_API_KEY`, from [Shadertoy's apps
+page](https://www.shadertoy.com/myapps) — which refuses to create one unless
+the account has Silver or Gold status, earned by contributing to the community
+rather than by asking.
+
+The author's own setting is the other half of it, and the fetcher inherits it
+for free: the API serves only what its author marked **Public + API**, and
+Shadertoy's terms are explicit that this is the content "accessible to third
+party applications or services". A shader marked plain Public is deliberately
+not on offer to a tool like this one, and comes back as a refusal that
+`.refused` records and later runs skip. That is a line worth keeping on the
+right side of — the site is reachable in a browser, and taking what the API
+declines to serve would be helping oneself to exactly what those authors opted
+out of.
 
 The same applies to the images a channel reads: Shadertoy's own textures are
 not ours to ship either, so `Apps/TunnelPort` generates the brick pattern it
