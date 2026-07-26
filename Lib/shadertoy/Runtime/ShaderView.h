@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Program.h"
+#include "Buffer.h"
 
 namespace Shadertoy
 {
@@ -14,6 +14,17 @@ class ShaderView : public GPU::GPUView
 {
 public:
     explicit ShaderView(Program& programToRun);
+
+    // Adds an off-screen pass that runs before the image - Buffer A through D,
+    // in the order they are added. The buffer must outlive the view, which the
+    // usual shape gives for free: the programs, the buffers and the view are
+    // members of one owner, in that order.
+    //
+    // Every buffer runs, then every buffer swaps, then the image draws. So the
+    // image sees what the buffers produced this frame, and a buffer reading any
+    // buffer - itself included - sees the frame before. That is one rule rather
+    // than two, and it is the one that makes feedback mean what it says.
+    void addBuffer(Buffer& buffer);
 
     // Rewinds iTime and iFrame, the way reloading the Shadertoy page does.
     void restart();
@@ -32,7 +43,14 @@ private:
     // with the origin at the bottom-left, matching fragCoord.
     std::array<float, 2> toShaderCoordinates(Graphics::Point point) const;
 
+    // The Shadertoy set, applied to one pass. Every pass of a multi-pass shader
+    // gets the same values, since the page publishes one clock and one
+    // resolution however many buffers read them.
+    void publishUniforms(Program& target, Graphics::Rect bounds, float scale);
+
     Program& program;
+
+    Vector<Buffer*> buffers;
 
     double elapsed = 0.0;
     double frameDelta = 0.0;

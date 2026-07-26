@@ -14,4 +14,6 @@ namespace Shadertoy
 namespace GPU = eacp::GPU;
 namespace Graphics = eacp::Graphics;
 namespace Threads = eacp::Threads;
+
+using eacp::Vector;
 } // namespace Shadertoy

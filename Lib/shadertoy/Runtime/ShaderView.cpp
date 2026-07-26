@@ -18,6 +18,11 @@ ShaderView::ShaderView(Program& programToRun)
     program.prepareFullscreen(sampleCount());
 }
 
+void ShaderView::addBuffer(Buffer& buffer)
+{
+    buffers.add(&buffer);
+}
+
 void ShaderView::restart()
 {
     elapsed = 0.0;
@@ -32,20 +37,44 @@ void ShaderView::update(Threads::FrameTime time)
     ++frameIndex;
 }
 
+void ShaderView::publishUniforms(Program& target, Graphics::Rect bounds, float scale)
+{
+    // Shadertoy measures iResolution and fragCoord in device pixels, so the
+    // view's logical points scale up before they reach the shader. A shader
+    // dividing by iResolution is unaffected either way; one drawing a fixed
+    // pixel grid is not.
+    target.iResolution = {bounds.w * scale, bounds.h * scale, 1.0f};
+    target.iTime = (float) elapsed;
+    target.iTimeDelta = (float) frameDelta;
+    target.iFrame = frameIndex;
+    target.iMouse = {pointer[0], pointer[1], click[0], click[1]};
+}
+
 void ShaderView::render(GPU::Frame& frame)
 {
     auto bounds = getLocalBounds();
     auto scale = backingScale();
 
-    // Shadertoy measures iResolution and fragCoord in device pixels, so the
-    // view's logical points scale up before they reach the shader. A shader
-    // dividing by iResolution is unaffected either way; one drawing a fixed
-    // pixel grid is not.
-    program.iResolution = {bounds.w * scale, bounds.h * scale, 1.0f};
-    program.iTime = (float) elapsed;
-    program.iTimeDelta = (float) frameDelta;
-    program.iFrame = frameIndex;
-    program.iMouse = {pointer[0], pointer[1], click[0], click[1]};
+    auto pixelWidth = (int) std::lround(bounds.w * scale);
+    auto pixelHeight = (int) std::lround(bounds.h * scale);
+
+    // Every buffer runs, then every buffer swaps, then the image draws. Two
+    // separate walks rather than one, because a buffer that swapped as soon as
+    // it had run would publish this frame's output to the buffers after it and
+    // last frame's to the ones before - and which of those a pass saw would
+    // then depend on where in the list it happened to sit.
+    for (auto* buffer: buffers)
+    {
+        publishUniforms(buffer->program, bounds, scale);
+        buffer->resize(pixelWidth, pixelHeight);
+        buffer->run(frame);
+    }
+
+    for (auto* buffer: buffers)
+        buffer->swap();
+
+    publishUniforms(program, bounds, scale);
+    program.refreshChannels();
 
     auto pass = frame.beginPass({backgroundColor});
     pass.draw(program);

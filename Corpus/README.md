@@ -68,6 +68,18 @@ scalarisation wrong still compiles and still reports nothing — a leaf read out
 of the wrong slot is a plausible colour, and a field that never escaped the loop
 is the colour it started as.
 
+`TrailBuffer.glsl` and `TrailImage.glsl` are the other half of stage 8, and the
+first entry here that is two files rather than one: a Shadertoy with a buffer.
+The buffer reads itself, which is what a buffer is for, and the image pass shows
+what it accumulated. Neither is a gap in the transpiler - both convert straight
+through - and that is the point, since what they measure is the runtime around
+them: the render-to-texture, the float format, the ping-pong and the order the
+passes run in. `Tests/Runtime/BufferTests` renders them through a float buffer
+and an 8-bit one side by side, because after eight frames those two disagree and
+nothing short of the frames says so. `Apps/TrailPort` runs them.
+
 Nothing in the corpus walks into a wall today, which is a corpus that has run
-out of things to say rather than an EDSL that has run out of gaps. Growing it is
-what the multi-buffer half of stage 8 is for.
+out of things to say rather than an EDSL that has run out of gaps. Fifteen
+shaders written for this project is not the thousands the counts were meant to
+rank - what closes that is fetching real Shadertoys by id, which the licensing
+note in the root README is about.

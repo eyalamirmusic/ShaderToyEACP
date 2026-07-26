@@ -4,6 +4,8 @@
 
 namespace Shadertoy
 {
+class Buffer;
+
 // The geometry a Shadertoy runs over: one oversized triangle covering the whole
 // viewport. A triangle rather than a quad because a quad's two halves meet on a
 // diagonal, and the rasterizer shades the pixels along that seam twice.
@@ -48,15 +50,50 @@ struct Channel
 
     Channel& operator=(const GPU::Texture& newTexture)
     {
-        texture = newTexture;
-
-        resolution = {(float) newTexture.width(), (float) newTexture.height(), 1.0f};
+        source = nullptr;
+        point(newTexture);
 
         return *this;
     }
 
+    // Points the channel at another pass rather than at a fixed image. What a
+    // buffer publishes changes every frame - that is what its swap is - so the
+    // channel remembers the buffer and re-reads it, instead of copying the
+    // texture it happened to be showing when the wiring was written. Defined in
+    // Buffer.h, where Buffer is a complete type.
+    Channel& operator=(const Buffer& buffer);
+
+    // Re-reads the buffer this channel follows, if it follows one. The view
+    // calls this before every pass; a channel pointed at an image ignores it.
+    void refresh();
+
+    void point(const GPU::Texture& newTexture)
+    {
+        texture = newTexture;
+
+        resolution = {(float) newTexture.width(), (float) newTexture.height(), 1.0f};
+    }
+
     GPU::Uniform<GPU::Texture2D> texture;
     GPU::Uniform<GPU::Float3> resolution;
+
+    // The pass this channel reads, when it reads one rather than an image.
+    const Buffer* source = nullptr;
+};
+
+// Walks a port's channels without touching its other uniforms, so the view can
+// re-point the ones that follow a buffer. Separate from ExtraUniformVisitor
+// because that one exists to reach eacp's uniform walk in declaration order,
+// and this one must not disturb it.
+class ChannelVisitor
+{
+public:
+    template <typename T>
+    void operator()(const char*, GPU::Uniform<T>&)
+    {
+    }
+
+    void operator()(const char*, Channel& channel) { channel.refresh(); }
 };
 
 // Adapts eacp's uniform walk to what a port declares on top of it, so
@@ -129,11 +166,27 @@ public:
     GPU::Uniform<GPU::Float4> iMouse; // xy = pointer, zw = click (see below)
 
     // Uploads the fullscreen triangle and builds the pipeline. sampleCount comes
-    // from the view being drawn into, as it does for a plain ShaderProgram.
-    void prepareFullscreen(int sampleCount)
+    // from the view being drawn into, as it does for a plain ShaderProgram, and
+    // colorFormat from whatever the draw ends up in - the view's drawable by
+    // default, and the texture's own format for a pass that renders into one.
+    void prepareFullscreen(
+        int sampleCount, GPU::PixelFormat colorFormat = GPU::PixelFormat::BGRA8Unorm)
     {
         setVertices(fullscreenTriangle);
-        prepare(sampleCount);
+        prepare(sampleCount,
+                false,
+                GPU::PrimitiveTopology::Triangles,
+                GPU::BlendMode::None,
+                colorFormat);
+    }
+
+    // Re-points every channel that follows a buffer at what that buffer
+    // published last. The view calls this before each pass, because a swap is
+    // exactly the moment the answer changes.
+    void refreshChannels()
+    {
+        auto visitor = ChannelVisitor {};
+        visitChannels(visitor);
     }
 
 protected:
@@ -147,6 +200,10 @@ protected:
     // everything from the ones above. Declare them as members and list them
     // here with SHADERTOY_UNIFORMS.
     virtual void reflectExtraUniforms(ExtraUniformVisitor&) {}
+
+    // The same list again, for the walk that only wants the channels.
+    // SHADERTOY_UNIFORMS writes both from the one set of names.
+    virtual void visitChannels(ChannelVisitor&) {}
 
 private:
     // The whole vertex stage of a Shadertoy: pass the covering triangle through
@@ -180,6 +237,10 @@ private:
 // declared by the base, so this names only what the port added.
 #define SHADERTOY_UNIFORMS(...)                                                     \
     void reflectExtraUniforms(Shadertoy::ExtraUniformVisitor& visitor) override     \
+    {                                                                               \
+        EACP_GPU_FIELDS(visitor, __VA_ARGS__)                                       \
+    }                                                                               \
+    void visitChannels(Shadertoy::ChannelVisitor& visitor) override                 \
     {                                                                               \
         EACP_GPU_FIELDS(visitor, __VA_ARGS__)                                       \
     }

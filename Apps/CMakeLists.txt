@@ -15,3 +15,7 @@ add_subdirectory(TunnelPort)
 # The shape stage 5 opened: a march whose length depends on what it hits, which
 # no amount of unrolling reaches.
 add_subdirectory(MarchPort)
+
+# And the shape stage 8 opened: a Shadertoy with a buffer, from two .glsl files,
+# whose buffer reads what it left there last frame.
+add_subdirectory(TrailPort)

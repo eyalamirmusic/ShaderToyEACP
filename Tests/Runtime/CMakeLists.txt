@@ -2,6 +2,7 @@ nano_add_executable(RuntimeTests
         NO_MAIN
         SOURCES
             ArrayTests.cpp
+            BufferTests.cpp
             ChannelTests.cpp
             ControlFlowTests.cpp
             ProgramTests.cpp
@@ -46,3 +47,8 @@ shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Latt
 # and returned from a helper in Facets.
 shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Surface.glsl NAME Surface)
 shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Facets.glsl NAME Facets)
+
+# Stage 8, the other half: a two-pass Shadertoy whose buffer reads itself. Two
+# .glsl files rather than one, which is what a multi-buffer page is.
+shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/TrailBuffer.glsl NAME TrailBuffer)
+shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/TrailImage.glsl NAME TrailImage)

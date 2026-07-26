@@ -18,9 +18,11 @@ which one to close next.
 > `select` — it has a signed integer, the operators only integers have, and a
 > constant array to subscript with one, and the vectors of both the integer and
 > the boolean, with the componentwise comparison that is the only thing a
-> boolean vector is ever made of. Stage 8 has taken the last row off the table:
-> the struct, which turned out not to be a gap in the EDSL at all. Multi-buffer
-> Shadertoys are what is left of it — see the plan and the coverage table below.
+> boolean vector is ever made of. Stage 8 took the last row off the table — the
+> struct, which turned out not to be a gap in the EDSL at all — and gave eacp
+> render-to-texture and float texture formats, so a Shadertoy can have buffers
+> that read what they left there last frame. See the plan and the coverage table
+> below.
 
 ## Why this works better than it looks like it should
 
@@ -62,21 +64,24 @@ Lib/shadertoy/Glsl/       lexer, parser, AST, diagnostics  (no GPU dependency)
                           become variables)
 Lib/shadertoy/Emit/       the AST -> C++ EDSL emitter
 Lib/shadertoy/Runtime/    Program (the Shadertoy uniform set + fullscreen pass)
-                          Channel (a texture and the size published beside it)
-                          ShaderView (clock, pointer, resolution, redraw)
+                          Channel (a texture, or a buffer, and the size beside it)
+                          Buffer (an off-screen pass and the pair it ping-pongs)
+                          ShaderView (clock, pointer, resolution, pass order)
 Tools/Transpile/          the shadertoy-transpile CLI
 Corpus/                   shaders the coverage report is measured against
 Apps/Plasma/              a hand port, for comparison
 Apps/PlasmaPort/          the same shader, converted from GLSL at build time
 Apps/TunnelPort/          a converted port that reads a texture channel
 Apps/MarchPort/           a converted port that marches a loop with a break
+Apps/TrailPort/           two converted ports, one reading what it wrote last frame
 Tests/Glsl/               lowering and diagnostics
 Tests/Runtime/            vertex layout, uniform block layout, generated stages,
                           corpus ports compiled from their GLSL by the build, and
                           rendered read-back of a bound channel, of a loop, of an
                           array read at an index the pixel computed, of a grid
-                          counted in integers behind a componentwise test, and
-                          of a struct carried out of a loop a field at a time
+                          counted in integers behind a componentwise test, of a
+                          struct carried out of a loop a field at a time, and of
+                          a buffer reading its own previous frame
 ```
 
 A port looks like this — hand-written or generated, the shape is the same:
@@ -339,19 +344,30 @@ families crosses from the CPU.
 It also gave a texel read the type it had been asking for since stage 4:
 `fetch()` takes an `Int2`, which is what a texel index is.
 
-**Stage 8 — the aggregate, and multi-buffer Shadertoys.** *Half done.* The
-struct is the half that is finished, and it is the one stage so far that eacp
-needed nothing for: a GLSL struct scalarises into one local per field, which is
-the same argument that already made a GLSL helper cost nothing, one level up.
-Declaration, constructor, whole assignment, field read and field write, a struct
-through a parameter and back out of an `out` one, a struct with a struct inside
-it, and a ternary choosing between two — all of it is lowering, and none of it
-reaches the emitter. See below for why that is a finding rather than a shortcut.
+**Stage 8 — the aggregate, and multi-buffer Shadertoys.** *Done*, and the two
+halves of it pulled in opposite directions, which is the interesting part.
 
-What is left is multi-buffer: Buffer A–D with feedback, which needs
-render-to-texture and float texture formats in eacp. That is the first thing the
-corpus cannot ask for on its own — the transpiler takes one file — so it is also
-what has to come next for the measurement to keep measuring anything.
+The struct is the half eacp needed nothing for: a GLSL struct scalarises into
+one local per field, which is the same argument that already made a GLSL helper
+cost nothing, one level up. Declaration, constructor, whole assignment, field
+read and field write, a struct through a parameter and back out of an `out` one,
+a struct with a struct inside it, and a ternary choosing between two — all of it
+is lowering, and none of it reaches the emitter. See below for why that is a
+finding rather than a shortcut.
+
+Multi-buffer is the half that needed real work in eacp, and it is the first
+capability the corpus could not ask for on its own: the transpiler takes one
+file, and a Shadertoy with buffers is several. eacp gained an app-facing
+render-to-texture — `Frame::beginPass(texture)`, a pass on the same frame rather
+than a frame of its own — and the float texture formats without which a pass
+feeding back into itself loses a little of its state every frame. On this side,
+a `Buffer` owns the pair of textures it ping-pongs and a `Channel` can follow
+one, so the whole of a multi-buffer page is which channel reads which pass.
+
+Every buffer runs, then every buffer swaps, then the image draws. One rule
+rather than two, and it is what makes feedback mean what it says: the image sees
+this frame's buffers, and a buffer reading any buffer — itself included — sees
+the frame before.
 
 ## Using it
 
@@ -384,6 +400,27 @@ struct declared. `Apps/MarchPort` needs nothing extra at all, and is the same
 build step over `Corpus/Raymarch.glsl` — the shader there was no port of before
 the EDSL had statements.
 
+A Shadertoy with buffers is several `.glsl` files rather than one, so it is
+several of the same build step and a little wiring. `Apps/TrailPort` is the
+worked example — that is the whole of it:
+
+```cpp
+Shadertoy::Ports::TrailBuffer bufferShader;
+Shadertoy::Ports::TrailImage imageShader;
+
+Shadertoy::Buffer buffer {bufferShader};
+Shadertoy::ShaderView view {imageShader};
+
+bufferShader.iChannel0 = buffer;   // Buffer A reads itself: the feedback
+imageShader.iChannel0 = buffer;    // and the image shows what it accumulated
+
+view.addBuffer(buffer);
+```
+
+A channel pointed at a buffer follows it rather than copying the texture it
+happened to be showing, since what a buffer publishes is exactly what its swap
+changes every frame.
+
 Measure the corpus — this is the exact command the table below comes from:
 
 ```bash
@@ -393,23 +430,27 @@ build/Tools/Transpile/shadertoy-transpile --report Corpus/*.glsl \
 
 ## The coverage table
 
-Over the thirteen shaders in `Corpus/` plus `Apps/PlasmaPort/Plasma.glsl`, as of
-the struct half of stage 8. `Shaders` is the number blocked by that gap, which is
-what the roadmap is sorted by:
+Over the fifteen shaders in `Corpus/` plus `Apps/PlasmaPort/Plasma.glsl`, as of
+the end of stage 8. `Shaders` is the number blocked by that gap, which is what
+the roadmap is sorted by:
 
 | Blocker | Shaders | Occurrences |
 | --- | ---: | ---: |
 
-14 of 14 shaders converted with no gaps.
+16 of 16 shaders converted with no gaps.
 
 The table is empty, which is the first time it has been and is not the good news
-it looks like: a measurement that has stopped measuring anything is a corpus that
-has run out of things to say, not an EDSL that has run out of gaps. Growing it is
-what multi-buffer is for — every Shadertoy that feeds a pass back into itself is
-a shader this corpus cannot even hold today, since the transpiler takes one file.
+it looks like. A measurement that has stopped measuring anything is a corpus that
+has run out of things to say, not an EDSL that has run out of gaps — and this
+corpus is fifteen shaders written for it, which is nothing like the thousands the
+counts were meant to rank.
 
-The row that came off it was `Surface.glsl`'s, and it came off without eacp
-changing at all — see below, because that is the interesting part.
+What comes next is therefore the corpus rather than the EDSL: fetching real
+Shadertoys by id, which the licence note at the bottom is about, and which is
+the only thing that turns these counts from a demonstration into a measurement.
+
+The row that came off the table this stage was `Surface.glsl`'s, and it came off
+without eacp changing at all — see below, because that is the interesting part.
 
 `Kaleido.glsl` was added with stage 3 and is the shader that measures it: a
 `mat2` rotation built inline, polar coordinates through the two-argument `atan`,
@@ -443,6 +484,12 @@ the surface was *and* what it was made of, written together inside the loop and
 read after it. The second is the rest of the aggregate — a struct with a struct
 inside it, passed to a helper and handed back from one, and a ternary choosing
 between two whole values of it.
+
+`TrailBuffer.glsl` and `TrailImage.glsl` are the other half of stage 8, and they
+are the first entry that is two files rather than one: a buffer that reads
+itself, and the image pass that shows what it accumulated. Neither is a gap in
+the transpiler — both convert straight through — which is exactly the point, since
+what they measure is the runtime around them. `Apps/TrailPort` runs them.
 
 The corpus is still far too small for these counts to rank anything. What it
 establishes is that the measurement works end to end — and it has now paid for
@@ -624,6 +671,43 @@ coordinate already is one. The `Float2` form stays, because a shader usually has
 the coordinate in hand as one and truncating it is exactly what the `ivec2`
 conversion would have done.
 
+**Render-to-texture is a pass, not a frame** (stage 8). eacp could already
+render off-screen — `View::renderToImage` does — but only as a snapshot: an
+`OffscreenTarget` of raw native handles, on a frame of its own, whose destructor
+blocks until the GPU has finished so the pixels can be read back. Handing that
+to an app as the way to draw into a texture would put a full pipeline stall
+between every pass of a multi-pass shader, four times a frame.
+
+What a multi-pass shader wants is the opposite: `Frame::beginPass(texture)`, a
+pass on the frame it was already given. Passes on one command buffer are ordered
+by the queue, so a texture written by an earlier one is legal to sample in a
+later one and neither backend needs a fence to say so. Metal gets one more
+render command encoder; D3D12 gets a render-target view, and the barriers to and
+from `PIXEL_SHADER_RESOURCE` — recorded where the texture is *used* rather than
+at the end of the pass, so a target written and then read costs the two it needs
+and one written and never read costs one.
+
+The pipeline had to learn the same thing. A `PixelFormat` that only had
+`BGRA8Unorm` is fine while every draw ends up in a drawable; a draw that ends up
+in a texture has to agree with that texture's format, and neither backend takes
+one that does not.
+
+**A feedback buffer needs a float format, and that is not an optimisation**
+(stage 8). Eight bits per channel cannot hold a value above 1 and quantise
+everything below it, so a pass that accumulates — a trail, a fluid, a running
+average — loses a little of its state every frame and settles into a flat colour
+it can no longer leave. `RGBA16Float` and `RGBA32Float` are what `Buffer` is
+made of by default, and `Tests/Runtime/BufferTests` renders the same shader
+through both: after eight frames the float one still has the gradient the pass
+wrote and the 8-bit one has saturated flat.
+
+The half that had to be decided rather than copied is which of the two to
+default to. `RGBA32Float` is the obvious "no loss" answer and the wrong one:
+neither backend guarantees a device can *filter* one, so a shader sampling its
+own buffer anywhere but at a texel centre would come back nearest-neighbour on
+some machines and bilinear on others. `RGBA16Float` filters everywhere eacp
+runs, holds far more range than a colour needs, and costs half as much.
+
 **The aggregate was never a gap in the EDSL** (stage 8). The ledger below had
 carried a `No structs` row against `ShaderTypes.h` since the beginning, and the
 obvious way to close it is a `ValueType::Struct`: a field list in the graph, an
@@ -689,6 +773,16 @@ was actually true. `Corpus/Surface.glsl` reports one row now instead of six,
 and the discipline it restores — a diagnostic names one capability, and two
 shaders blocked by the same thing agree on it — is what the counts are for.
 
+Stage 8's is smaller and is the kind only a new shader finds. The emitter's
+line-wrapping re-walks a call's *argument nodes* rather than the text it emitted,
+which is what lets a wrapped line lay its arguments out properly — and a
+constructor whose emitted arguments are not the ones it was parsed with had no
+such form, so it stayed on one line however long it got. That covers the
+broadcast `vec3(x)`, which emits as `float3(x, x, x)`: one node, three times.
+`Corpus/TrailBuffer.glsl` writes `vec3(0.25 + uv.x * 0.5)` and came out
+ninety-seven columns wide. Saying that the arguments are the same node repeated
+is the whole fix, and it is the last shape that could still run past the limit.
+
 ## The gap ledger
 
 What eacp's EDSL cannot express today, from reading the module — the standing
@@ -705,8 +799,8 @@ list the table above is gradually replacing with measured counts.
 | No `transpose`, `inverse` or `determinant` — a matrix can be built and multiplied, and that is where `Float2x2`/`Float3x3` stop | `ShaderValue.h` |
 | `Float2x2`/`Float3x3` cannot be uniforms: MSL and HLSL pack them to different sizes, which no padding between fields can bridge. `Float4x4` is unaffected | `UniformLayout.h` |
 | A vector built only from literals is rejected — `ComponentsFor` needs one handle to take a graph from, so `vec3(0.0)` has no direct spelling. A scalar has the same problem: `float d = 2.0` is a C++ float rather than a value, and ports anchor both with `constant()` | `ShaderValue.h` |
-| No app-facing render-to-texture (`OffscreenTarget` is snapshot-only) | `Frame.h` |
-| Texture formats are 8-bit only; no float/half, and no mips — so a texture has one level and `sample(t, uv, level)` reads it whatever level it asks for | `Texture.h` |
+| No mips — a texture has one level, so `sample(t, uv, level)` reads it whatever level it asks for | `Texture.h` |
+| A render target is single-sampled and has no depth attachment: what `Frame::beginPass(texture)` is for is a full-screen pass over a whole texture, and neither has a meaning there | `Frame.h` |
 | A texture is declared into the fragment signature only, so nothing sampled reaches the vertex stage — as with `dfdx`/`dfdy`/`fwidth`, which are fragment-bound in the language too | `ShaderEmitter.cpp` |
 | No `textureSize`: HLSL spells it `GetDimensions`, which writes through out parameters rather than returning, and the emitter is an expression printer. A Shadertoy reads `iChannelResolution` instead, which the runtime fills from the bound texture | `ShaderValue.h` |
 | No sampling bias and no explicit-gradient sample (`textureGrad`) | `ShaderValue.h` |
@@ -743,6 +837,13 @@ struct of handles is a C++ struct, and the transpiler scalarises a GLSL one into
 the fields the EDSL always had. What replaced it above is what is actually true
 — no array of aggregates, and no aggregate uniform.
 
+Closed by stage 8 for real: the render-to-texture row and the 8-bit-only row.
+`Frame::beginPass(texture)` draws into a texture created with
+`TextureDescriptor::renderTarget`, on the frame it was already given rather than
+one of its own, and `RGBA16Float`/`RGBA32Float` are what a pass that reads what
+it wrote has to be made of. What is left of textures is above: no mips, and no
+vertex-stage sample.
+
 ## Validation
 
 Three layers, because they catch different things.
@@ -756,10 +857,10 @@ not take is a failing build rather than a clean report. This is what found the
 missing scalar broadcast above.
 
 **Rendered pixels.** *Started in stage 4, and load-bearing since stage 5.*
-`Tests/Runtime/ChannelTests`, `ControlFlowTests`, `ArrayTests`, `VectorTests`
-and `StructTests` render a port off-screen through `View::renderToImage` and
-read the frame back. They exist because all five stages are invisible to the
-other two layers: a
+`Tests/Runtime/ChannelTests`, `ControlFlowTests`, `ArrayTests`, `VectorTests`,
+`StructTests` and `BufferTests` render a port off-screen through
+`View::renderToImage` and read the frame back. They exist because all six stages
+are invisible to the other two layers: a
 channel that never reaches the draw compiles cleanly, reports nothing and
 renders black; a loop that never runs, one that ignores its break and one that
 runs to completion all compile, all report nothing, and differ only in their
@@ -792,6 +893,21 @@ back through: the albedo a march carries out of its loop has components
 the three channels in that order — a frame shaded by the distance leaf instead
 comes out grey. Beside it, two candidates that differ in every field at once say
 whether a choice between two whole structs was made per field or once.
+
+Stage 8's other one is the first that needs more than one frame to say anything,
+and the first written as a *comparison between two runs* rather than against a
+number: the same two shaders through a float buffer and through an 8-bit one,
+eight frames each. After eight the float one still has the gradient the buffer
+pass wrote and the 8-bit one has saturated flat, and neither run has to be right
+about an absolute value for the pair to be conclusive.
+
+That shape came out of getting it wrong first. A read-back frame is what Core
+Animation composites, which is premultiplied — so a fragment left at alpha 0.25
+comes back with its colour divided by four, and two values that differed before
+that division can arrive equal after it. The first version of eacp's own
+render-target test read exactly that and looked like a float format that was not
+working. Every check here is now either between two renders or on an *ordering*
+of channels, both of which survive whatever the frame is composited through.
 
 Each check is written as a fraction of the frame rather than as a pixel count,
 because a view renders at the display's backing scale and the image read back is
@@ -835,6 +951,7 @@ Outputs:
 - `build/Apps/PlasmaPort/PlasmaPort.app` — the same shader, transpiled
 - `build/Apps/TunnelPort/TunnelPort.app` — a transpiled port reading a channel
 - `build/Apps/MarchPort/MarchPort.app` — a transpiled port marching a loop
+- `build/Apps/TrailPort/TrailPort.app` — two transpiled ports, one a feedback buffer
 - `build/Tests/Glsl/GlslTests`, `build/Tests/Runtime/RuntimeTests`
 
 ## On licensing the corpus

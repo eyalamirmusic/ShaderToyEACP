@@ -886,10 +886,11 @@ private:
 
         if (expr.kind == ExprKind::Call && !expr.args.empty())
         {
-            auto callee = wrappableCallName(node, expr);
+            auto call = wrappableCall(node, expr);
 
-            if (!callee.empty())
-                return layoutCall(callee, expr, column, trailing, indent);
+            if (!call.callee.empty())
+                return layoutCall(
+                    call.callee, call.arguments, column, trailing, indent);
         }
 
         // A ternary emits as select(condition, whenTrue, whenFalse) over the
@@ -898,53 +899,84 @@ private:
         // its elements, which is the same shape again. A palette is the one
         // thing here that reliably runs long, so this is what it needs.
         if (expr.kind == ExprKind::Ternary)
-            return layoutCall("select", expr, column, trailing, indent);
+            return layoutCall("select", expr.args, column, trailing, indent);
 
         if (expr.kind == ExprKind::ArrayLiteral && !expr.args.empty())
-            return layoutCall("array", expr, column, trailing, indent);
+            return layoutCall("array", expr.args, column, trailing, indent);
 
         return single;
     }
 
-    // The name a call emits under, when it emits as name(args...) over exactly
-    // the arguments it was parsed with - the only shape the wrapping layout can
-    // rebuild, since it re-walks the argument nodes rather than the text
-    // emitCall produced. A constructor that regroups its arguments into columns,
-    // repeats a broadcast scalar or anchors one with constant() has no such
-    // form, and stays on one line.
-    std::string wrappableCallName(int node, const Expr& expr)
+    // What a call emits as, when it emits as name(a, b, ...) over nodes this
+    // layout can re-walk. The nodes are usually the ones it was parsed with, and
+    // the callee empty for a call that has no such form at all - a constructor
+    // that anchors itself with constant(), or one whose components have to cross
+    // vocabularies on the way in. Those stay on one line.
+    struct WrappableCall
+    {
+        std::string callee {};
+        Vector<int> arguments {};
+    };
+
+    WrappableCall wrappableCall(int node, const Expr& expr)
     {
         auto width = vectorConstructorWidth(expr.text);
 
         if (width > 0)
-        {
-            auto family = familyOf(typeFromGlslName(expr.text));
-
-            // A lone argument is either a broadcast or a whole-value
-            // conversion, and neither emits as name(args...) over the nodes
-            // this re-walks; nor does a component that has to cross
-            // vocabularies, nor a constructor that anchors itself.
-            auto regroups =
-                !mentionsAName(node) || (expr.args.size() == 1 && width > 1);
-
-            for (auto argument: expr.args)
-                regroups = regroups || !readsInFamily(argument, family);
-
-            return regroups ? std::string {}
-                            : constructorName(family) + std::to_string(width);
-        }
+            return wrappableConstructor(node, expr, width);
 
         if (isTextureCall(expr.text))
-            return passthroughTextureCall(expr);
+            return {passthroughTextureCall(expr), expr.args};
 
         const auto* builtin = findBuiltin(expr.text);
 
         if (builtin == nullptr || builtin->edsl == nullptr)
             return {};
 
-        return builtin->edslBinary != nullptr && expr.args.size() == 2
-                   ? builtin->edslBinary
-                   : builtin->edsl;
+        auto callee = builtin->edslBinary != nullptr && expr.args.size() == 2
+                          ? builtin->edslBinary
+                          : builtin->edsl;
+
+        return {callee, expr.args};
+    }
+
+    WrappableCall wrappableConstructor(int node, const Expr& expr, int width)
+    {
+        auto family = familyOf(typeFromGlslName(expr.text));
+
+        if (!mentionsAName(node))
+            return {};
+
+        for (auto argument: expr.args)
+            if (!readsInFamily(argument, family))
+                return {};
+
+        auto callee = constructorName(family) + std::to_string(width);
+
+        // A scalar spread across every component is the one constructor whose
+        // emitted arguments are not the ones it was parsed with: it is the same
+        // node, `width` times. Saying that is all the layout needs to break one
+        // - and without it a broadcast of anything but a short name is the one
+        // shape that could still run past the column limit.
+        if (isBroadcast(expr, width))
+        {
+            auto repeated = Vector<int> {};
+
+            for (auto index = 0; index < width; ++index)
+                repeated.add(expr.args[0]);
+
+            return {callee, repeated};
+        }
+
+        return {callee, expr.args};
+    }
+
+    // The same test emitVectorConstructor makes, kept beside the layout that
+    // has to rebuild what it produced.
+    bool isBroadcast(const Expr& expr, int width)
+    {
+        return expr.args.size() == 1 && width > 1
+               && widthOf(typeOf(expr.args[0])) == 1;
     }
 
     std::string layoutChain(const Vector<std::pair<std::string, int>>& terms,
@@ -980,7 +1012,7 @@ private:
     // The argument list filled greedily, so a call that runs long breaks where
     // it has to rather than once per argument.
     std::string layoutCall(const std::string& callee,
-                           const Expr& expr,
+                           const Vector<int>& arguments,
                            int column,
                            int trailing,
                            const std::string& indent)
@@ -989,12 +1021,12 @@ private:
         auto text = callee + "(";
         auto at = column + (int) text.size();
 
-        for (auto index = 0; index < expr.args.size(); ++index)
+        for (auto index = 0; index < arguments.size(); ++index)
         {
-            auto last = index + 1 == expr.args.size();
+            auto last = index + 1 == arguments.size();
             auto separator = last ? std::string {} : std::string {","};
             auto reserved = (int) separator.size() + (last ? trailing + 1 : 0);
-            auto argument = emitExpression(expr.args[index]);
+            auto argument = emitExpression(arguments[index]);
 
             if (at + (int) argument.size() + reserved > columnLimit)
             {
@@ -1005,7 +1037,7 @@ private:
 
                 text += "\n" + indent;
                 at = (int) indent.size();
-                argument = layoutExpression(expr.args[index], at, reserved, inner);
+                argument = layoutExpression(arguments[index], at, reserved, inner);
             }
 
             text += argument + separator + (last ? "" : " ");
