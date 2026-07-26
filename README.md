@@ -24,8 +24,11 @@ which one to close next.
 > that read what they left there last frame. Stage 9 is the corpus rather than
 > the EDSL: the preprocessor and the lvalue swizzle a real Shadertoy is written
 > with, a fetcher that pulls shaders by id, and `transpose`/`determinant` in
-> eacp for the one gap the reading turned up in its column. See the plan and the
-> coverage table below.
+> eacp for the one gap the reading turned up in its column. Stage 10 is the
+> first time any of it was measured against shaders nobody here wrote: 204 real
+> Shadertoys, half of which convert, half of *those* compile, and what stops the
+> rest is now a ranked list with eacp's own name at the top of it. See the plan
+> and the coverage table below.
 
 ## Why this works better than it looks like it should
 
@@ -75,6 +78,8 @@ Lib/shadertoy/Corpus/     the API, and the books a 1500-request month needs
 Tools/Corpus/             shadertoy-fetch, which pulls Shadertoys by id
 Corpus/                   shaders the coverage report is measured against
                           (ids.txt names the ones that are not committed)
+Corpus/Imported/          real Shadertoys, by other people, permissively licensed
+Tests/Corpus/             the fetcher's bookkeeping, over a stubbed API
 Apps/Plasma/              a hand port, for comparison
 Apps/PlasmaPort/          the same shader, converted from GLSL at build time
 Apps/TunnelPort/          a converted port that reads a texture channel
@@ -452,6 +457,41 @@ accessible to third party applications", and plain Public content is not
 offered to third-party tools. So the corpus is what the API serves, and
 scraping the site for the rest is not on the table.
 
+**Stage 10 — shaders nobody here wrote, and looking at them.** *Done.* Stage 9
+built the fetcher and then could not run it, for the reason above: the key needs
+a status a new account does not have. What broke the deadlock was a corpus
+someone had already collected through the API — `Vipitis/Shadereval-inputs`, the
+input set of the ShaderEval benchmark, 204 distinct Shadertoys with the author
+and the licence beside each one, paged out as JSON by a public endpoint that
+wants no key at all. Every one of them carries an explicit permissive licence,
+which is why eight could be committed to `Corpus/Imported/` rather than only
+measured.
+
+Running the report over all 204 is the first real reading the coverage table has
+had, and it produced a second one nobody had asked for. Half the shaders convert
+— and **half of those do not compile**. A shader that converts is one the
+transpiler had nothing to report about; whether the C++ it emitted is C++ a
+compiler accepts is a different question, and the report is structurally unable
+to ask it. `Apps/Gallery` is what asks it: one app with every port compiled in,
+arrow keys to walk them, so a shader that converts and does not build stops the
+build, and one that builds and does not look right is visible at last. Both
+tables are below.
+
+**Stage 11 — what the measurement asks for.** *Next*, and for the first time the
+order is measured rather than argued. Three pieces, in this order:
+
+1. **eacp: a literal in any argument position.** 27 of the 49 compile failures
+   are one gap — see the ledger. 21 of the 49 have *no other* error, so they
+   compile the day it closes.
+2. **The transpiler's own bugs.** 20 of the 49 never reach eacp at all: an
+   identifier emitted before it was declared, a reassignment emitted as a
+   declaration, a type inferred wrongly. None of these are gaps in the EDSL and
+   all of them are invisible to the report, which is the point.
+3. **A scan step, so the number above is a measurement rather than an
+   anecdote.** Both figures here were produced by hand. As a build step —
+   convert everything in a directory, compile-test each, register the survivors
+   and tabulate the rest — rerunning it after (1) is how the fix gets scored.
+
 ## Using it
 
 Convert one shader:
@@ -554,28 +594,64 @@ one month's requests gets built at all.
 
 ## The coverage table
 
-Over the eighteen shaders in `Corpus/` plus `Apps/PlasmaPort/Plasma.glsl`, as of
-the end of stage 9. `Shaders` is the number blocked by that gap, which is what
-the roadmap is sorted by:
+Two of them, because there are two ways to fail and only one of them was ever
+being counted.
+
+### What does not convert
+
+Over the 204 real Shadertoys in `Vipitis/Shadereval-inputs`, which is the first
+corpus here that nobody wrote for this project. `Shaders` is the number blocked
+by that gap, which is what the roadmap is sorted by. The ten rows at the top of
+it, out of a long tail that runs down to a great many blocking one shader each:
 
 | Blocker | Shaders | Occurrences |
 | --- | ---: | ---: |
+| control-flow: early return | 71 | 187 |
+| type: indexing | 15 | 39 |
+| parse-error: unexpected `}` | 8 | 31 |
+| type: vector * matrix | 7 | 14 |
+| user-function: radians | 6 | 8 |
+| component-assignment: indexed target | 5 | 18 |
+| intrinsic: inverse | 5 | 5 |
+| user-function: tanh | 5 | 5 |
+| type: uint | 4 | 7 |
+| user-function: floatBitsToInt | 4 | 4 |
 
-19 of 19 shaders converted with no gaps.
+100 of 204 converted with no gaps; 104 reported at least one.
 
-The table is empty, and it has been since stage 8 — which is not the good news
-it looks like, and stage 9 is what that observation turned into. A measurement
-that has stopped measuring anything is a corpus that has run out of things to
-say, not an EDSL that has run out of gaps, and eighteen shaders written for this
-project is nothing like the thousands the counts were meant to rank.
+`radians`, `tanh` and `floatBitsToInt` arriving as *user functions* is the
+cheapest row on the list: they are GLSL builtins that the intrinsic table simply
+does not name. The expensive one is at the top and is not close — a `return`
+in the middle of a function is how a real shader says "not this pixel", and no
+amount of unrolling or inlining flattens one.
 
-So the honest reading of an empty table is still: **the corpus is too small, and
-these counts rank nothing yet.** `Corpus/ids.txt` and `shadertoy-fetch` are the
-way out of that, and they are what stage 9 built. What stage 9 also did
-was read enough real Shadertoy source to find three walls that a corpus of
-fifteen hand-written shaders had never touched — the preprocessor, the lvalue
-swizzle and the matrix transpose — which is a preview of what the fetcher will
-produce at scale rather than a substitute for it.
+Over the corpus in this repository — 18 in `Corpus/`, 8 in `Corpus/Imported/`
+and `Apps/PlasmaPort/Plasma.glsl` — the same report is empty, 27 of 27, which is
+what it has been since stage 8 and no longer means anything by itself. The
+shaders here were written to convert or picked because they did.
+
+### What converts and then does not compile
+
+The second table is the one stage 10 discovered, and it exists because the first
+one cannot see it. Of the 100 shaders that convert, the emitted C++ is fed to a
+compiler; **51 of them build and 49 do not**. Grouped by the first error:
+
+| Blocker | Shaders | Whose is it |
+| --- | ---: | --- |
+| Unresolved intrinsic overload — a literal in an argument position eacp has no form for | 27 | eacp |
+| Identifier emitted before it was declared | 9 | transpiler |
+| Invalid operands — a type inferred wrongly and carried into an operator | 5 | transpiler |
+| `auto x = … x …` — a reassignment emitted as a declaration | 5 | transpiler |
+| `.x` on a `Float` — a scalar where a vector was meant | 3 | transpiler |
+
+21 of the 49 have no error *other* than the overload one, so they compile on the
+day eacp accepts a literal in any position. 20 have no overload error at all and
+are entirely this project's fault. The remaining 8 are both.
+
+This is the table worth taking seriously, because every row in it is a shader
+the coverage report had already called converted. It is also the reason
+`Apps/Gallery` compiles every port rather than a chosen few: the report cannot
+fail a build, and a compiler can.
 
 The last row that came off it was `Surface.glsl`'s, in stage 8, and it came off
 without eacp changing at all — see below, because that is the interesting part,
@@ -630,13 +706,20 @@ of finding: what it needs is lowering, not a node. `Basis.glsl` is the one that
 did land in eacp's column — a `mat3` orientation gone back through with
 `transpose`.
 
-The corpus is still far too small for these counts to rank anything. What it
-establishes is that the measurement works end to end — and it has now paid for
-itself seven times over, turning three assumptions into bugs in stage 3, three
-more in stage 4, two in stage 5, two in stage 6 and three in stage 7 before any
-of them shipped, in stage 8 correcting the ledger about where a gap even was,
-and in stage 9 finding that most of what stood in the way was not in either
-column: it was notation the front end could not read.
+That sentence used to end by conceding that the corpus was far too small for any
+of these counts to rank anything, which was true for nine stages and is not any
+more. Stage 10 put 204 shaders nobody here wrote through the same report and
+then through a compiler, and both tables above are the result. What the nine
+stages before it established is that the measurement works end to end — and it
+had already paid for itself seven times over, turning three assumptions into
+bugs in stage 3, three more in stage 4, two in stage 5, two in stage 6 and three
+in stage 7 before any of them shipped, in stage 8 correcting the ledger about
+where a gap even was, and in stage 9 finding that most of what stood in the way
+was not in either column: it was notation the front end could not read.
+
+Stage 10's finding is of the same kind and is the largest so far: half of what
+the report passes, a compiler rejects — and the single biggest reason is one
+missing shape in eacp's intrinsics rather than anything the ledger had listed.
 
 ## What this has already changed in eacp
 
@@ -984,6 +1067,31 @@ is the whole fix, and it is the last shape that could still run past the limit.
 What eacp's EDSL cannot express today, from reading the module — the standing
 list the table above is gradually replacing with measured counts.
 
+The first row is the first entry here that arrived as a count rather than as a
+reading, and it is next:
+
+**An intrinsic takes a literal only where it was written to.** Every intrinsic
+comes in two shapes: one where every argument is a handle, and one where the
+scalar arguments are `float` and get anchored with `constantOn` against the
+argument that is not. There is nothing in between, and GLSL mixes them freely:
+
+| What a shader writes | What eacp has | What is missing |
+| --- | --- | --- |
+| `smoothstep(0.0, zo * zi, -d)` | `(float, float, T)` and `(T, T, T)` | one literal edge, one handle edge |
+| `min(0.0, g)`, `max(-1.0, x)` | `min(T, float)` | the literal *first* |
+| `step(d, 0.0)` | `step(float, T)` | the literal *second* |
+| `pow(2.0, 4.0 * sin(t))` | — | a literal base |
+| `mix(0.5, 1.0, h)` | `(A, B, float)` | literal endpoints, a computed blend |
+
+All five are legal GLSL and all five have a spelling in MSL and HLSL, so this is
+eacp's own column rather than the languages'. The fix is mechanical — accept a
+literal in any scalar position and anchor it with `constantOn` against whichever
+argument is a handle — and it is worth **27 shaders blocked first and 21
+unblocked outright**, which is more than any other single row here has ever been
+worth. `ShaderValue.h`.
+
+The rest, in the order they were found rather than ranked:
+
 | Blocker | Where it lives in eacp |
 | --- | --- |
 | No array of aggregates — a struct of handles is a C++ struct and needs nothing from the EDSL, but an array of one would need an array per field and a subscript that agreed across all of them, which no single `ArrayConstant` node says | `ShaderGraph.h` — `ArrayConstant` |
@@ -1047,15 +1155,17 @@ vertex-stage sample.
 
 ## Validation
 
-Three layers, because they catch different things.
+Four layers, because they catch different things, and the gap between the first
+two is where half of stage 10's findings came from.
 
 **The report.** A shader either names what it needs or it does not — the counts
-in the table above.
+in the first table above.
 
 **The compiler.** `Tests/Runtime` transpiles corpus shaders at build time and
 instantiates the ports, so a header that reports no gaps but that the EDSL will
 not take is a failing build rather than a clean report. This is what found the
-missing scalar broadcast above.
+missing scalar broadcast above, and — once it was pointed at 100 shaders written
+by other people rather than the 19 written here — the 49 in the second table.
 
 **Rendered pixels.** *Started in stage 4, and load-bearing since stage 5.*
 `Tests/Runtime/ChannelTests`, `ControlFlowTests`, `ArrayTests`, `VectorTests`,
@@ -1135,6 +1245,24 @@ instead, which is the better place for them: `mod` is recorded as its floored
 form rather than as a call either backend would truncate, and a matrix
 construction is transposed on HLSL so both backends read the same columns. Both
 are pinned by codegen tests in eacp rather than by an image.
+
+**A human looking at it.** *Stage 10.* `Apps/Gallery` compiles every port into
+one app and walks through them with the arrow keys. It is the weakest layer and
+the least automatable, and it is the only one that can catch a shader which
+converts, compiles, satisfies every pixel a test thought to check, and still
+does not look like the shader it came from. What it caught first was in the
+runtime rather than in a port: rewinding `iTime` restarted nothing for a shader
+that feeds back into itself, because what such a shader accumulates lives in its
+buffer rather than in its clock. `Buffer::clear()` is that fix, and
+`BufferTests` now pins it — a layer above turning into a layer below, which is
+where a finding from this one is supposed to end up.
+
+For the imported shaders there is a fifth check available and no way to automate
+it: the shader's own page. `Corpus/Imported/3l23RK.glsl` is iq's *Pie - distance
+2D*, and the port draws the same orange distance bands, the same blue interior
+and the same white outline as shadertoy.com does — differing only in where the
+animation had got to. That comparison is worth doing once per imported shader
+and is not worth building anything for.
 
 ## Building
 
