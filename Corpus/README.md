@@ -78,8 +78,32 @@ passes run in. `Tests/Runtime/BufferTests` renders them through a float buffer
 and an 8-bit one side by side, because after eight frames those two disagree and
 nothing short of the frames says so. `Apps/TrailPort` runs them.
 
+`Macros.glsl`, `Compose.glsl` and `Basis.glsl` are stage 9's, and the first two
+are the only entries here whose subject is *notation* rather than capability.
+`Macros.glsl` is written the way a real Shadertoy is - the resolution behind a
+`#define`, half the body behind an `#ifdef`, a shaping function that is a
+function-like macro rather than a function - and none of it reaches the EDSL at
+all. `Compose.glsl` builds its colour a component at a time, which GLSL allows
+and neither shading language under the EDSL does: each write is the whole value
+rebuilt, and `Tests/Runtime/ComponentTests` renders it back because a component
+landing in the wrong slot is a colour and not an error.
+
+`Basis.glsl` is the eacp half of the same stage: an orientation carried in a
+`mat3` and inverted with `transpose`, which is the operation that turns a matrix
+from something a shader can build into something it can use. `inverse` stands
+beside it and is still a gap - GLSL has one, MSL and HLSL do not.
+
 Nothing in the corpus walks into a wall today, which is a corpus that has run
-out of things to say rather than an EDSL that has run out of gaps. Fifteen
+out of things to say rather than an EDSL that has run out of gaps. Eighteen
 shaders written for this project is not the thousands the counts were meant to
-rank - what closes that is fetching real Shadertoys by id, which the licensing
-note in the root README is about.
+rank - what closes that is fetching real Shadertoys by id. `ids.txt` and
+`build/Tools/Corpus/shadertoy-fetch` are what that takes: the ids are committed
+and the shaders are not, since their default licence makes redistribution a real
+question. What comes back lands in `Corpus/External`, which is gitignored, and
+is measured with the same report:
+
+```bash
+export SHADERTOY_API_KEY=...            # https://www.shadertoy.com/howto#q2
+build/Tools/Corpus/shadertoy-fetch
+build/Tools/Transpile/shadertoy-transpile --report Corpus/External/*.glsl
+```

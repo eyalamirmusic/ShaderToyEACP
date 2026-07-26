@@ -430,9 +430,6 @@ private:
             statement.line = peek().line;
             statement.name = advance().text;
 
-            if (shader.isStructType(type))
-                structLocals.insert(statement.name);
-
             // `vec3 palette[4]`. The size is dropped here for the same reason
             // it is in the constructor: the initialiser already carries it.
             if (match("["))
@@ -500,7 +497,6 @@ private:
             statement.type = type;
             statement.line = peek().line;
             statement.name = advance().text;
-            structLocals.insert(statement.name);
 
             if (match("="))
                 statement.value = parseExpression();
@@ -651,21 +647,6 @@ private:
         return object.empty() ? std::string {} : object + "." + expr.text;
     }
 
-    // Whether a member chain reaches into a struct rather than naming
-    // components of a vector, which is what decides whether writing through it
-    // is an assignment lowering can scalarise or the component write the EDSL
-    // has no spelling for. The root is what settles it: only a local declared
-    // with a struct type has fields at all.
-    bool isStructPath(int node) const
-    {
-        const auto& expr = shader.expr(node);
-
-        if (expr.kind == ExprKind::Identifier)
-            return structLocals.count(expr.text) != 0;
-
-        return expr.kind == ExprKind::Member && isStructPath(expr.args[0]);
-    }
-
     void addAssignment(Vector<Statement>& into,
                        int target,
                        const std::string& op,
@@ -674,21 +655,16 @@ private:
     {
         const auto& targetNode = shader.expr(target);
 
-        // `hit.distance = d`. A struct field is a local of its own once the
-        // struct is scalarised, so this is an ordinary assignment to a name
-        // that happens to be spelled with a dot in it.
-        if (targetNode.kind == ExprKind::Member && isStructPath(target))
-        {
-            auto statement = Statement {StatementKind::Assign};
-            statement.name = pathOf(target);
-            statement.op = op;
-            statement.value = value;
-            statement.line = line;
-            into.add(std::move(statement));
-            return;
-        }
+        // `hit.distance = d` and `col.rg = uv` are the same shape here, and the
+        // parser is the wrong place to tell them apart: which one a dotted
+        // target is depends on what its root is bound to, and only lowering
+        // knows that. So both are passed on as the path they name - a struct
+        // field is a local of its own once the struct is scalarised, and a
+        // swizzle is a write to part of a value that lowering rebuilds whole.
+        auto path =
+            targetNode.kind == ExprKind::Member ? pathOf(target) : std::string {};
 
-        if (targetNode.kind != ExprKind::Identifier)
+        if (targetNode.kind != ExprKind::Identifier && path.empty())
         {
             report(DiagnosticKind::ComponentAssignment,
                    targetNode.kind == ExprKind::Member ? "." + targetNode.text
@@ -702,7 +678,7 @@ private:
         }
 
         auto statement = Statement {StatementKind::Assign};
-        statement.name = targetNode.text;
+        statement.name = path.empty() ? targetNode.text : path;
         statement.op = op;
         statement.value = value;
         statement.line = line;
@@ -996,12 +972,7 @@ private:
                 parameter.name = advance().text;
 
             if (!parameter.name.empty())
-            {
-                if (shader.isStructType(parameter.type))
-                    structLocals.insert(parameter.name);
-
                 function.parameters.add(std::move(parameter));
-            }
 
             if (!match(","))
                 break;
@@ -1078,13 +1049,6 @@ private:
     Vector<Token> tokens;
     Vector<Diagnostic> diagnostics;
     Shader shader;
-
-    // Every name declared with a struct type, which is all that is needed to
-    // tell `hit.distance = d` from `col.x = 1.0`. Flat rather than scoped: the
-    // two would have to be the same name in two functions for that to matter,
-    // and lowering resolves the path properly there anyway - what it cannot
-    // find, it reports as the component write this took it for.
-    std::set<std::string> structLocals;
 
     int position = 0;
 };

@@ -32,3 +32,8 @@ xcschememanagement.plist
 
 workspace.xml
 xcuserdata
+
+# Fetched Shadertoys: a list of ids is committed, the shaders themselves are
+# not - their default licence makes redistribution a real question. See
+# Corpus/ids.txt and Tools/Corpus.
+/Corpus/External

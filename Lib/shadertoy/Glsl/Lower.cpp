@@ -25,6 +25,11 @@ struct Binding
     bool isConstant = false;
     double value = 0.0;
 
+    // The GLSL type this name was declared with, kept for the one question
+    // lowering has to answer about a value's shape rather than about its
+    // contents: how many components a write to some of them has to rebuild.
+    std::string type {};
+
     // The struct this name has the type of, when it has one. A struct binds no
     // node of its own - it has no single value to be - and its leaves are bound
     // beside it under the dotted paths that name them. That substitution is the
@@ -85,6 +90,48 @@ constexpr const char* reservedNames[] = {
 bool isIntegerType(const std::string& type)
 {
     return type == "int" || type == "uint";
+}
+
+// How many components a declared type has, and so how many a write to some of
+// them has to put back. Zero for everything that is neither a scalar nor a
+// vector, which is what keeps a matrix and a struct out of the rebuild below.
+int widthOfType(const std::string& type)
+{
+    for (auto scalar: {"float", "int", "uint", "bool"})
+        if (type == scalar)
+            return 1;
+
+    for (auto prefix: {"vec", "ivec", "uvec", "bvec"})
+    {
+        auto head = std::string(prefix);
+
+        if (type.size() != head.size() + 1
+            || type.compare(0, head.size(), head) != 0)
+            continue;
+
+        auto width = type.back() - '0';
+
+        if (width >= 2 && width <= 4)
+            return width;
+    }
+
+    return 0;
+}
+
+// Which component a letter names. GLSL's three sets are interchangeable and
+// mean the same four positions, so a shader writing `col.rg` and reading
+// `col.xy` is talking about the same pair.
+int componentIndex(char letter)
+{
+    for (auto set: {"xyzw", "rgba", "stpq"})
+    {
+        auto found = std::string_view(set).find(letter);
+
+        if (found != std::string_view::npos)
+            return (int) found;
+    }
+
+    return -1;
 }
 
 class Lowerer
@@ -188,6 +235,19 @@ private:
         node.args.add(left);
         node.args.add(right);
         return output.add(std::move(node));
+    }
+
+    bool isName(int node) const
+    {
+        auto kind = node >= 0 ? output.expr(node).kind : ExprKind::Call;
+        return kind == ExprKind::Identifier || kind == ExprKind::Number;
+    }
+
+    int component(int node, int index)
+    {
+        auto member = Expr {ExprKind::Member, std::string(1, "xyzw"[index])};
+        member.args.add(node);
+        return output.add(std::move(member));
     }
 
     // --- constant folding -------------------------------------------------
@@ -1127,7 +1187,9 @@ private:
 
         if (substitutable)
         {
-            scopes.back()[parameter.name] = incoming.binding;
+            auto substituted = incoming.binding;
+            substituted.type = parameter.type;
+            scopes.back()[parameter.name] = std::move(substituted);
             return;
         }
 
@@ -1140,6 +1202,7 @@ private:
 
         auto binding = incoming.binding;
         binding.node = identifier(emitted);
+        binding.type = parameter.type;
         scopes.back()[parameter.name] = binding;
     }
 
@@ -1168,6 +1231,7 @@ private:
             auto node = incoming.leaves[index];
             auto kind = node >= 0 ? output.expr(node).kind : ExprKind::Number;
             auto leafBinding = Binding {};
+            leafBinding.type = leaves[index].type;
 
             if (!written
                 && (kind == ExprKind::Number || kind == ExprKind::Identifier))
@@ -1387,6 +1451,7 @@ private:
 
             auto leafBinding = Binding {};
             leafBinding.node = identifier(emitted);
+            leafBinding.type = leaves[index].type;
             bind(statement.name + "." + leaves[index].path, std::move(leafBinding));
         }
     }
@@ -1454,6 +1519,7 @@ private:
         into.add(std::move(declaration));
 
         binding.node = identifier(emitted);
+        binding.type = type;
         bind(statement.name, binding);
     }
 
@@ -1500,38 +1566,161 @@ private:
         }
 
         // A dotted name nothing is bound under is not a struct field after all,
-        // which leaves it as what the parser took it for: writing one component
-        // of a value, which the EDSL has no spelling for.
+        // which leaves it as what it reads like: a write to some of the
+        // components of the value the rest of the path names.
         if (find(statement.name) == nullptr
             && statement.name.find('.') != std::string::npos)
         {
-            report(DiagnosticKind::ComponentAssignment,
-                   statement.name.substr(statement.name.rfind('.')));
+            lowerComponentAssign(statement, into);
             return;
         }
 
         auto value = lowerExpression(statement.value, into);
 
-        auto* existing = find(statement.name);
+        assign(statement.name,
+               statement.op,
+               value,
+               constantAfter(statement, find(statement.name)),
+               statement.line,
+               into);
+    }
+
+    // Writing part of a value is the one thing neither the EDSL nor either
+    // shading language under it has, and the reason is the same in all three:
+    // what they have is the whole value. So the components not written are read
+    // back out of the target and the write becomes a construction of all of
+    // them - `col.rg = uv` is `col = vec3(uv.x, uv.y, col.b)`, which is what a
+    // shader would have had to write if GLSL had not offered the shorthand.
+    //
+    // It costs nothing to say it that way. The target and the value are each
+    // lowered once and every component is a swizzle of that one node, so the
+    // graph records each of them exactly as often as the assignment did.
+    void lowerComponentAssign(const Statement& statement, Vector<Statement>& into)
+    {
+        auto dot = statement.name.rfind('.');
+        auto rootName = statement.name.substr(0, dot);
+        auto components = statement.name.substr(dot + 1);
+
+        auto* root = find(rootName);
+        auto isFirstWrite = root == nullptr && rootName == source.fragColor;
+        auto type = root != nullptr ? root->type : std::string("vec4");
+        auto width = widthOfType(type);
+
+        auto writes = Vector<int> {};
+
+        for (auto letter: components)
+            writes.add(componentIndex(letter));
+
+        auto usable =
+            (root != nullptr || isFirstWrite) && width > 0 && writes.size() <= width;
+
+        for (auto index = 0; usable && index < writes.size(); ++index)
+        {
+            usable = writes[index] >= 0 && writes[index] < width;
+
+            // An lvalue swizzle names each component at most once - GLSL says
+            // so, and a repeat here would be two values in one place.
+            for (auto other = 0; other < index; ++other)
+                usable = usable && writes[other] != writes[index];
+        }
+
+        if (!usable || (root != nullptr && root->node < 0))
+        {
+            report(DiagnosticKind::ComponentAssignment, "." + components);
+            return;
+        }
+
+        auto value = lowerExpression(statement.value, into);
+        auto target = isFirstWrite ? -1 : root->node;
+
+        // More than one component written means reading the value once per
+        // component, and eacp's emitter shares by node identity rather than by
+        // shape - so a value that is not already a name gets one here, exactly
+        // as an argument at a call site does, and the shader evaluates it once
+        // however many components it lands in.
+        if (writes.size() > 1 && !isName(value))
+        {
+            auto emitted = unique(rootName + "_" + components);
+            auto declaration = Statement {StatementKind::Declare, emitted};
+            declaration.value = value;
+            declaration.line = statement.line;
+            into.add(std::move(declaration));
+
+            value = identifier(emitted);
+        }
+
+        auto rebuilt = Expr {ExprKind::Call, type};
+
+        for (auto index = 0; index < width; ++index)
+        {
+            auto at = -1;
+
+            for (auto position = 0; position < writes.size(); ++position)
+                if (writes[position] == index)
+                    at = position;
+
+            // A component the write does not name keeps what the target already
+            // had - or, on the first write to the out parameter, a zero, since
+            // what it had is what GLSL leaves undefined.
+            if (at < 0)
+            {
+                rebuilt.args.add(isFirstWrite ? number(0.0)
+                                              : component(target, index));
+                continue;
+            }
+
+            // A one-component write takes the value whole: `col.x = d` hands
+            // over a scalar, and asking it for its first component would be
+            // asking a float to be a vector.
+            auto written = writes.size() == 1 ? value : component(value, at);
+
+            rebuilt.args.add(
+                statement.op.empty()
+                    ? written
+                    : binary(statement.op, component(target, index), written));
+        }
+
+        assign(rootName,
+               {},
+               output.add(std::move(rebuilt)),
+               Binding {-1, false, 0.0, type},
+               statement.line,
+               into);
+    }
+
+    void assign(const std::string& name,
+                const std::string& op,
+                int value,
+                Binding updated,
+                int statementLine,
+                Vector<Statement>& into)
+    {
+        auto* existing = find(name);
         auto isVariable =
             existing != nullptr && existing->node >= 0
             && output.expr(existing->node).kind == ExprKind::Identifier;
 
-        auto updated = constantAfter(statement, existing);
+        if (updated.type.empty() && existing != nullptr)
+            updated.type = existing->type;
+
+        // The out parameter is written rather than declared, so the only thing
+        // that says what shape it is is mainImage's own signature.
+        if (updated.type.empty() && name == source.fragColor)
+            updated.type = "vec4";
 
         if (existing == nullptr)
         {
             // The first write to the out parameter, or to a name whose
             // declaration the parser could not keep: it becomes the declaration.
-            auto emitted = unique(statement.name);
+            auto emitted = unique(name);
             auto assignment = Statement {StatementKind::Assign, emitted};
-            assignment.op = statement.op;
+            assignment.op = op;
             assignment.value = value;
-            assignment.line = statement.line;
+            assignment.line = statementLine;
             into.add(std::move(assignment));
 
             updated.node = identifier(emitted);
-            bind(statement.name, updated);
+            bind(name, updated);
             return;
         }
 
@@ -1539,9 +1728,9 @@ private:
         {
             auto assignment =
                 Statement {StatementKind::Assign, output.expr(existing->node).text};
-            assignment.op = statement.op;
+            assignment.op = op;
             assignment.value = value;
-            assignment.line = statement.line;
+            assignment.line = statementLine;
             into.add(std::move(assignment));
 
             updated.node = existing->node;
@@ -1560,12 +1749,10 @@ private:
             return;
         }
 
-        auto emitted = unique(statement.name);
+        auto emitted = unique(name);
         auto declaration = Statement {StatementKind::Declare, emitted};
-        declaration.value = statement.op.empty()
-                                ? value
-                                : binary(statement.op, existing->node, value);
-        declaration.line = statement.line;
+        declaration.value = op.empty() ? value : binary(op, existing->node, value);
+        declaration.line = statementLine;
         into.add(std::move(declaration));
 
         updated.node = identifier(emitted);

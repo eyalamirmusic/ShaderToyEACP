@@ -11,7 +11,7 @@ a matter of opinion into a measurement. Every shader that fails to convert names
 a specific gap, and the number of shaders blocked on each gap is what decides
 which one to close next.
 
-> **⚠️ Early days.** Stages 0 to 7 are done: straight-line GLSL converts,
+> **⚠️ Early days.** Stages 0 to 8 are done: straight-line GLSL converts,
 > constant-trip-count loops unroll, helper functions inline, the intrinsic and
 > swizzle gaps are closed, texture channels are sampled, the EDSL has real
 > control flow — mutable locals, `if`/`else`, `while`, `break`, `continue` and
@@ -21,8 +21,11 @@ which one to close next.
 > boolean vector is ever made of. Stage 8 took the last row off the table — the
 > struct, which turned out not to be a gap in the EDSL at all — and gave eacp
 > render-to-texture and float texture formats, so a Shadertoy can have buffers
-> that read what they left there last frame. See the plan and the coverage table
-> below.
+> that read what they left there last frame. Stage 9 is the corpus rather than
+> the EDSL: the preprocessor and the lvalue swizzle a real Shadertoy is written
+> with, a fetcher that pulls shaders by id, and `transpose`/`determinant` in
+> eacp for the one gap the reading turned up in its column. See the plan and the
+> coverage table below.
 
 ## Why this works better than it looks like it should
 
@@ -68,7 +71,9 @@ Lib/shadertoy/Runtime/    Program (the Shadertoy uniform set + fullscreen pass)
                           Buffer (an off-screen pass and the pair it ping-pongs)
                           ShaderView (clock, pointer, resolution, pass order)
 Tools/Transpile/          the shadertoy-transpile CLI
+Tools/Corpus/             shadertoy-fetch, which pulls Shadertoys by id
 Corpus/                   shaders the coverage report is measured against
+                          (ids.txt names the ones that are not committed)
 Apps/Plasma/              a hand port, for comparison
 Apps/PlasmaPort/          the same shader, converted from GLSL at build time
 Apps/TunnelPort/          a converted port that reads a texture channel
@@ -80,8 +85,9 @@ Tests/Runtime/            vertex layout, uniform block layout, generated stages,
                           rendered read-back of a bound channel, of a loop, of an
                           array read at an index the pixel computed, of a grid
                           counted in integers behind a componentwise test, of a
-                          struct carried out of a loop a field at a time, and of
-                          a buffer reading its own previous frame
+                          struct carried out of a loop a field at a time, of a
+                          buffer reading its own previous frame, and of a colour
+                          written one component at a time
 ```
 
 A port looks like this — hand-written or generated, the shape is the same:
@@ -369,6 +375,62 @@ rather than two, and it is what makes feedback mean what it says: the image sees
 this frame's buffers, and a buffer reading any buffer — itself included — sees
 the frame before.
 
+**Stage 9 — what a real Shadertoy is written with.** *Done.* Stage 8 ended with
+an empty coverage table and the observation that this was not good news: a
+measurement that has stopped measuring is a corpus that has run out of things to
+say. So this stage is the corpus, and the first thing measuring a real one
+turned up is that almost nothing standing in the way was a gap in the EDSL at
+all. It was *notation* — and notation is a wall like any other, because a front
+end that stops at `#` fails a shader over spelling and reports nothing about
+what the shader actually needed.
+
+The preprocessor is the whole of it. A function-like `#define` — `#define S(a,b,t)
+smoothstep(a,b,t)`, `#define R iResolution.xy` — with arguments expanded before
+they are substituted and the result rescanned, so a macro can be handed its own
+invocation. `#ifdef`, `#ifndef`, `#if` over an integer constant expression,
+`#elif`, `#else`, `#endif` and `#undef`, which between them decide *which half*
+of a shader the parser ever sees. And `##`, plus the hexadecimal literal that
+every hash constant is written in and that lexed as a zero followed by a name
+until this stage.
+
+Beside it, the other thing every second shader does and this could not read: a
+write to part of a value. `col.rg = uv`, `fragColor.rgb = col`, `p.xy += d`.
+That is the second finding, and it runs the same way as stage 8's — GLSL has the
+shorthand, and *neither shading language under the EDSL does*, so what the EDSL
+would have to grow is not a way to write one component but a way to say the
+thing both languages already say: build the whole value. `col.rg = uv` is
+`col = vec3(uv.x, uv.y, col.b)`, which is exactly what a shader would have had
+to write if GLSL had not offered the shorthand, and it is lowering rather than
+anything in the graph.
+
+eacp's own column got one row out of the reading, and it is a real one:
+`transpose` and `determinant`, which is where the small matrices stopped being
+write-only. A shader that carries an orientation around inverts an orthonormal
+basis by transposing it, and until now a `mat3` could be built and multiplied
+and nothing else. `inverse` stays a gap and is the more interesting half of the
+entry — see below.
+
+And the corpus itself: `Corpus/ids.txt` and `shadertoy-fetch`, which turn a list
+of Shadertoy ids into files under a gitignored `Corpus/External`. The ids are
+committed and the shaders are not, which is what the licence note at the bottom
+has been about since stage 1. A shader with buffers comes back as several files,
+exactly as `TrailBuffer.glsl` and `TrailImage.glsl` are, and a `common` pass
+comes back as the prelude it is rather than as a file of its own.
+
+It is a C++ tool for the same reason everything else here is one: eacp already
+has an HTTP client and a JSON parser, so the fetcher costs one file and no
+dependency the project did not already have. It is also the one target here that
+talks to anything — the transpiler beside it reads text and writes text, and
+links neither.
+
+The list ships empty, and that is a limit worth stating plainly rather than
+hiding: the shaders behind these three capabilities were read and written out
+here rather than fetched, because shadertoy.com sits behind a bot check that no
+script gets through unattended. What the fetcher needs is a key and a machine
+the site will answer. Until it has run, the counts below still rank eighteen
+shaders written for this project — the gate is open, and nothing has walked
+through it yet.
+
 ## Using it
 
 Convert one shader:
@@ -428,29 +490,43 @@ build/Tools/Transpile/shadertoy-transpile --report Corpus/*.glsl \
     Apps/PlasmaPort/Plasma.glsl
 ```
 
+Or measure real Shadertoys, which is what the counts were built to rank. The
+ids are committed and the shaders are not:
+
+```bash
+export SHADERTOY_API_KEY=...            # https://www.shadertoy.com/howto#q2
+build/Tools/Corpus/shadertoy-fetch      # everything in Corpus/ids.txt
+build/Tools/Transpile/shadertoy-transpile --report Corpus/External/*.glsl
+```
+
 ## The coverage table
 
-Over the fifteen shaders in `Corpus/` plus `Apps/PlasmaPort/Plasma.glsl`, as of
-the end of stage 8. `Shaders` is the number blocked by that gap, which is what
+Over the eighteen shaders in `Corpus/` plus `Apps/PlasmaPort/Plasma.glsl`, as of
+the end of stage 9. `Shaders` is the number blocked by that gap, which is what
 the roadmap is sorted by:
 
 | Blocker | Shaders | Occurrences |
 | --- | ---: | ---: |
 
-16 of 16 shaders converted with no gaps.
+19 of 19 shaders converted with no gaps.
 
-The table is empty, which is the first time it has been and is not the good news
-it looks like. A measurement that has stopped measuring anything is a corpus that
-has run out of things to say, not an EDSL that has run out of gaps — and this
-corpus is fifteen shaders written for it, which is nothing like the thousands the
-counts were meant to rank.
+The table is empty, and it has been since stage 8 — which is not the good news
+it looks like, and stage 9 is what that observation turned into. A measurement
+that has stopped measuring anything is a corpus that has run out of things to
+say, not an EDSL that has run out of gaps, and eighteen shaders written for this
+project is nothing like the thousands the counts were meant to rank.
 
-What comes next is therefore the corpus rather than the EDSL: fetching real
-Shadertoys by id, which the licence note at the bottom is about, and which is
-the only thing that turns these counts from a demonstration into a measurement.
+So the honest reading of an empty table is still: **the corpus is too small, and
+these counts rank nothing yet.** `Corpus/ids.txt` and `shadertoy-fetch` are the
+way out of that, and they are what stage 9 built. What stage 9 also did
+was read enough real Shadertoy source to find three walls that a corpus of
+fifteen hand-written shaders had never touched — the preprocessor, the lvalue
+swizzle and the matrix transpose — which is a preview of what the fetcher will
+produce at scale rather than a substitute for it.
 
-The row that came off the table this stage was `Surface.glsl`'s, and it came off
-without eacp changing at all — see below, because that is the interesting part.
+The last row that came off it was `Surface.glsl`'s, in stage 8, and it came off
+without eacp changing at all — see below, because that is the interesting part,
+and because stage 9 then found two more of the same shape.
 
 `Kaleido.glsl` was added with stage 3 and is the shader that measures it: a
 `mat2` rotation built inline, polar coordinates through the two-argument `atan`,
@@ -491,11 +567,23 @@ itself, and the image pass that shows what it accumulated. Neither is a gap in
 the transpiler — both convert straight through — which is exactly the point, since
 what they measure is the runtime around them. `Apps/TrailPort` runs them.
 
+`Macros.glsl`, `Compose.glsl` and `Basis.glsl` are stage 9's, and the first two
+are the only shaders here whose subject is notation rather than capability.
+`Macros.glsl` is written the way a real Shadertoy is — the resolution behind a
+`#define`, a shaping function that is a function-like macro, half the body
+behind an `#ifdef`, a hexadecimal constant — and *none of it reaches the EDSL*.
+`Compose.glsl` builds its colour one component at a time, which is the same kind
+of finding: what it needs is lowering, not a node. `Basis.glsl` is the one that
+did land in eacp's column — a `mat3` orientation gone back through with
+`transpose`.
+
 The corpus is still far too small for these counts to rank anything. What it
 establishes is that the measurement works end to end — and it has now paid for
-itself six times over, turning three assumptions into bugs in stage 3, three
+itself seven times over, turning three assumptions into bugs in stage 3, three
 more in stage 4, two in stage 5, two in stage 6 and three in stage 7 before any
-of them shipped, and in stage 8 correcting the ledger about where a gap even was.
+of them shipped, in stage 8 correcting the ledger about where a gap even was,
+and in stage 9 finding that most of what stood in the way was not in either
+column: it was notation the front end could not read.
 
 ## What this has already changed in eacp
 
@@ -736,6 +824,61 @@ understating what eacp was missing, it was naming a capability in the wrong
 column. A row that says the EDSL cannot do something it can is worse than a
 missing row, because it is the one the roadmap would have been sorted by.
 
+**The small matrices stop being write-only** (stage 9). A `mat2` or `mat3` could
+be built and multiplied, and that is a matrix a shader can *make* and not one it
+can use: the operation that turns an orientation into something you can go back
+through is the transpose, since an orthonormal basis is inverted by transposing
+it. `transpose` and `determinant` are in eacp now, and both are right on both
+backends without a per-backend form — which is not luck. HLSL already holds
+transposed what MSL holds, so transposing each leaves each holding the transpose
+of the same logical matrix; and a determinant is equal for a matrix and its
+transpose, so that one needs no argument at all. The check that matters is on
+HLSL, where the construction already emitted a `transpose` of its own and the
+two have to *nest* rather than cancel — `GPU/codegenMatrixTranspose` pins it and
+`GPU/codegenMatrixTransposeCompiles` puts it through the real shader compiler,
+which is the only thing that answers whether a language has the builtin the
+emitter named.
+
+`inverse` is not beside them, and that is the finding rather than the omission.
+GLSL has it; **neither MSL nor HLSL does**. So it is not a node the graph is
+missing — it is a cofactor expansion per order, which is a function a caller
+writes out of the nodes that are there. The ledger row that used to name all
+three as one gap was naming a property of GLSL as a property of eacp.
+
+**Most of what stands in the way is not in either column** (stage 9). The ledger
+below is a list of things the EDSL cannot express, and the coverage table is a
+list of things the corpus asks for, and the assumption underneath both is that a
+shader fails because of one or the other. Reading real Shadertoy source says
+otherwise: the three most common walls were a function-like `#define`, an
+`#ifdef`, and a write to part of a value — and *not one of them is a capability
+at all*. Two are notation the front end could not read, and the third is a
+shorthand GLSL has that neither shading language under the EDSL has, so what it
+needs is the whole value rebuilt rather than anything new to build it with.
+
+That matters more than any single row, because of what it does to the counts. A
+shader whose first line is `#define R iResolution.xy` reported `preprocessor:
+#define (function-like macro)` and then reported the *rest of the shader wrong* —
+every use of `R` became an unknown identifier, and everything downstream of that
+became a parse error. The gap that blocks a shader has to be the gap the shader
+actually has, or the roadmap is sorted by noise. Stage 7 found the same shape one
+level down, in a struct whose name was thrown away; this is that lesson at the
+scale of a whole file.
+
+**A swizzle binds tighter than any operator** (stage 9). Emitting `.x()` after
+an object that emitted as an operator produced `a + b.x()` where the source said
+`(a + b).x`, which is a different value and a perfectly plausible one. It had
+never come up while every swizzle in the corpus sat on a name — and the
+component rebuild above puts one on an arbitrary expression every time it fires.
+Pinned by `Glsl/swizzleOfASumIsGrouped`.
+
+**A regrouped constructor has no arguments to re-walk** (stage 9). The same
+shape as stage 8's broadcast bug, one constructor over: the line-wrapping path
+re-walks a call's argument *nodes*, and a matrix constructor takes columns while
+GLSL spells components, so `mat3(1.0, 0.0, ...)` had no wrappable form and came
+out 116 columns wide. Nine nodes in, three columns out. The fix is to let the
+layout take a call whose arguments are already text, which is what a regrouped
+constructor has and what the wrapping path had no shape for.
+
 Stage 3 also found a bug on this side of the fence rather than in eacp: the
 emitter's line-wrapping path rebuilt a call's head from the *GLSL* name, so a
 wrapped `inversesqrt` came back as `inversesqrt` instead of `rsqrt`. It had
@@ -796,7 +939,7 @@ list the table above is gradually replacing with measured counts.
 | Control flow is fragment-stage (or kernel) only: the statement list is emitted into the fragment function, so a `Var` must not feed the position or a varying — as with `dfdx` and sampling, which are fragment-bound in the language too | `ShaderEmitter.cpp` |
 | No `do`/`while`-at-the-bottom and no `switch`; no early `return` from a shader body, which is one expression returned at the end | `ShaderGraph.h` — `StatementKind` |
 | A `Bool` cannot be a uniform: MSL packs one into a byte and an HLSL cbuffer into four. Send a `Float` and compare it | `UniformLayout.h` |
-| No `transpose`, `inverse` or `determinant` — a matrix can be built and multiplied, and that is where `Float2x2`/`Float3x3` stop | `ShaderValue.h` |
+| No `inverse` — and unlike the rest of this list that is a property of the languages rather than of eacp: GLSL has one, MSL and HLSL do not, so it would be a cofactor expansion per order and is a function a caller writes | `ShaderValue.h` |
 | `Float2x2`/`Float3x3` cannot be uniforms: MSL and HLSL pack them to different sizes, which no padding between fields can bridge. `Float4x4` is unaffected | `UniformLayout.h` |
 | A vector built only from literals is rejected — `ComponentsFor` needs one handle to take a graph from, so `vec3(0.0)` has no direct spelling. A scalar has the same problem: `float d = 2.0` is a C++ float rather than a value, and ports anchor both with `constant()` | `ShaderValue.h` |
 | No mips — a texture has one level, so `sample(t, uv, level)` reads it whatever level it asks for | `Texture.h` |
@@ -832,6 +975,11 @@ comparisons on two vectors of either family, `any()`/`all()` and the vector
 vector. An integer vector is a uniform as well as an expression; a boolean one
 is not, for the reason the scalar `Bool` is not.
 
+Closed by stage 9: two thirds of the matrix row. `transpose` and `determinant`
+on all three square matrices, spelled once and right on both backends for the
+same reason the construction already was. What is left of it is above, and it is
+the third that neither shading language has either.
+
 Struck out by stage 8: the aggregate row, which was never eacp's to close. A
 struct of handles is a C++ struct, and the transpiler scalarises a GLSL one into
 the fields the EDSL always had. What replaced it above is what is actually true
@@ -858,9 +1006,9 @@ missing scalar broadcast above.
 
 **Rendered pixels.** *Started in stage 4, and load-bearing since stage 5.*
 `Tests/Runtime/ChannelTests`, `ControlFlowTests`, `ArrayTests`, `VectorTests`,
-`StructTests` and `BufferTests` render a port off-screen through
-`View::renderToImage` and read the frame back. They exist because all six stages
-are invisible to the other two layers: a
+`StructTests`, `BufferTests` and `ComponentTests` render a port off-screen
+through `View::renderToImage` and read the frame back. They exist because all
+seven stages are invisible to the other two layers: a
 channel that never reaches the draw compiles cleanly, reports nothing and
 renders black; a loop that never runs, one that ignores its break and one that
 runs to completion all compile, all report nothing, and differ only in their
@@ -920,6 +1068,15 @@ catches a port that compiles but is subtly wrong — `pow` with a negative base,
 `round` on an exact half, and whether a `mat2` really came out column-major on
 both backends. The read-back path it rides on is the one above.
 
+Stage 9's is the second one where the check is an ordering rather than a value,
+and it adds a shape the others do not have: a staircase. `Compose.glsl` writes
+each component of its colour separately and then accumulates into one of them
+once per band the pixel's own column is past, so green rises in four steps
+across the frame while red and blue stay flat. A component written into the
+wrong slot changes the ordering; a variable read once outside the loop flattens
+the staircase; a variable read after its own assignment gets the step heights
+wrong. All three compile, all three report nothing, and all three are a picture.
+
 Two of the traps this layer was meant to catch are closed by construction
 instead, which is the better place for them: `mod` is recorded as its floored
 form rather than as a call either backend would truncate, and a matrix
@@ -952,6 +1109,7 @@ Outputs:
 - `build/Apps/TunnelPort/TunnelPort.app` — a transpiled port reading a channel
 - `build/Apps/MarchPort/MarchPort.app` — a transpiled port marching a loop
 - `build/Apps/TrailPort/TrailPort.app` — two transpiled ports, one a feedback buffer
+- `build/Tools/Corpus/shadertoy-fetch` — the corpus fetcher
 - `build/Tests/Glsl/GlslTests`, `build/Tests/Runtime/RuntimeTests`
 
 ## On licensing the corpus
@@ -961,6 +1119,13 @@ and the non-commercial clause makes redistribution a real question rather than a
 formality. The corpus is therefore fetched on demand from a list of IDs rather
 than vendored, and only ports of self-authored or explicitly permissive shaders
 are committed here.
+
+Since stage 9 that is machinery rather than a policy: `Corpus/ids.txt` is the
+list, `shadertoy-fetch` turns it into files under `Corpus/External`, and
+`.gitignore` keeps that directory out. The fetcher needs a key of your own from
+[Shadertoy's API page](https://www.shadertoy.com/howto#q2) in
+`SHADERTOY_API_KEY` — the API refuses an unkeyed request, and the site's bot
+protection refuses an unattended one whatever key it carries.
 
 The same applies to the images a channel reads: Shadertoy's own textures are
 not ours to ship either, so `Apps/TunnelPort` generates the brick pattern it

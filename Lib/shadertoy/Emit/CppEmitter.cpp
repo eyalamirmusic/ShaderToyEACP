@@ -288,12 +288,13 @@ constexpr Builtin builtins[] = {
     {"any", "any", ResultShape::Boolean},
     {"all", "all", ResultShape::Boolean},
 
-    // Everything below is a gap: GLSL has it, the EDSL does not. The matrix
-    // three need an operation on Float2x2/Float3x3 beyond construction and
-    // multiplication, which is where those types stop today.
-    {"transpose", nullptr, ResultShape::LikeArg0},
+    // The two matrix operations both shading languages have. GLSL has a third
+    // and neither of them does, which is why inverse is below rather than here.
+    {"transpose", "transpose", ResultShape::LikeArg0},
+    {"determinant", "determinant", ResultShape::Scalar},
+
+    // Everything below is a gap: GLSL has it, the EDSL does not.
     {"inverse", nullptr, ResultShape::LikeArg0},
-    {"determinant", nullptr, ResultShape::Scalar},
 };
 
 const Builtin* findBuiltin(const std::string& name)
@@ -888,6 +889,10 @@ private:
         {
             auto call = wrappableCall(node, expr);
 
+            if (!call.columns.empty())
+                return layoutColumns(
+                    call.callee, call.columns, column, trailing, indent);
+
             if (!call.callee.empty())
                 return layoutCall(
                     call.callee, call.arguments, column, trailing, indent);
@@ -916,6 +921,13 @@ private:
     {
         std::string callee {};
         Vector<int> arguments {};
+
+        // A call whose arguments are text rather than nodes, because what it
+        // emits is not what it was parsed with: a matrix constructor takes the
+        // columns and GLSL spells the components. A column is short - four
+        // components at the most - so it is laid out whole and the break goes
+        // between them.
+        Vector<std::string> columns {};
     };
 
     WrappableCall wrappableCall(int node, const Expr& expr)
@@ -924,6 +936,11 @@ private:
 
         if (width > 0)
             return wrappableConstructor(node, expr, width);
+
+        auto matrix = typeFromGlslName(expr.text);
+
+        if (matrixOrder(matrix) > 0)
+            return {edslMatrixName(matrix), {}, matrixColumns(node, expr, matrix)};
 
         if (isTextureCall(expr.text))
             return {passthroughTextureCall(expr), expr.args};
@@ -1042,6 +1059,40 @@ private:
 
             text += argument + separator + (last ? "" : " ");
             at = columnAfter(argument, at) + (int) separator.size() + (last ? 0 : 1);
+        }
+
+        return text + ")";
+    }
+
+    // The same break as layoutCall over arguments that have already been
+    // emitted, since a regrouped one has no node left to walk back into.
+    std::string layoutColumns(const std::string& callee,
+                              const Vector<std::string>& columns,
+                              int column,
+                              int trailing,
+                              const std::string& indent)
+    {
+        auto text = callee + "(";
+        auto at = column + (int) text.size();
+
+        for (auto index = 0; index < columns.size(); ++index)
+        {
+            auto last = index + 1 == columns.size();
+            auto separator = last ? std::string {} : std::string {","};
+            auto reserved = (int) separator.size() + (last ? trailing + 1 : 0);
+
+            if (at + (int) columns[index].size() + reserved > columnLimit)
+            {
+                if (!text.empty() && text.back() == ' ')
+                    text.pop_back();
+
+                text += "\n" + indent;
+                at = (int) indent.size();
+            }
+
+            text += columns[index] + separator + (last ? "" : " ");
+            at += (int) columns[index].size() + (int) separator.size()
+                  + (last ? 0 : 1);
         }
 
         return text + ")";
@@ -1611,9 +1662,22 @@ private:
         return "/* unsupported: " + expr.text + " */ (" + left + ")";
     }
 
+    // A swizzle binds tighter than any operator, so an object that emitted as
+    // one has to be grouped before it: `(a + b).xy()` reads the sum and
+    // `a + b.xy()` reads b. GLSL needed the same parentheses to say the first
+    // of those, and leaving them out here is the difference between the two.
+    std::string emitPostfixObject(int node)
+    {
+        auto grouped =
+            shader.expr(node).kind == ExprKind::Unary || !operatorOf(node).empty();
+        auto text = emitExpression(node);
+
+        return grouped ? "(" + text + ")" : text;
+    }
+
     std::string emitMember(const Expr& expr)
     {
-        auto object = emitExpression(expr.args[0]);
+        auto object = emitPostfixObject(expr.args[0]);
 
         // A field of a struct is not a swizzle that happens to be spelled
         // oddly: what is missing is the aggregate it was read out of, which is
@@ -1843,8 +1907,11 @@ private:
     // GLSL fills a matrix column by column, from either one column vector per
     // column, or every component in column order, or a single scalar on the
     // diagonal. The EDSL's constructors take the columns, so only the middle
-    // form has to be regrouped.
-    std::string emitMatrixConstructor(int node, const Expr& expr, Type type)
+    // form has to be regrouped - which is also why this hands back the columns
+    // rather than the finished call: regrouped, they are no longer the argument
+    // nodes the wrapping path knows how to re-walk. Empty for a matrix built in
+    // none of the three ways.
+    Vector<std::string> matrixColumns(int node, const Expr& expr, Type type)
     {
         auto order = matrixOrder(type);
         auto columns = Vector<std::string> {};
@@ -1856,7 +1923,7 @@ private:
             for (auto arg: expr.args)
                 columns.add(emitExpression(arg));
 
-            return joinMatrix(type, columns);
+            return columns;
         }
 
         auto components = Vector<std::string> {};
@@ -1877,8 +1944,7 @@ private:
         }
         else
         {
-            report(DiagnosticKind::UnsupportedType, expr.text);
-            return "/* unsupported: " + expr.text + " */ " + emitArguments(expr);
+            return columns;
         }
 
         // Like a vector built only from literals, a matrix built only from them
@@ -1896,6 +1962,19 @@ private:
                 parts += (row > 0 ? ", " : "") + components[column * order + row];
 
             columns.add(columnName + "(" + parts + ")");
+        }
+
+        return columns;
+    }
+
+    std::string emitMatrixConstructor(int node, const Expr& expr, Type type)
+    {
+        auto columns = matrixColumns(node, expr, type);
+
+        if (columns.empty())
+        {
+            report(DiagnosticKind::UnsupportedType, expr.text);
+            return "/* unsupported: " + expr.text + " */ " + emitArguments(expr);
         }
 
         return joinMatrix(type, columns);

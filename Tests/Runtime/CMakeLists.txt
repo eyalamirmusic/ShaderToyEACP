@@ -4,6 +4,7 @@ nano_add_executable(RuntimeTests
             ArrayTests.cpp
             BufferTests.cpp
             ChannelTests.cpp
+            ComponentTests.cpp
             ControlFlowTests.cpp
             ProgramTests.cpp
             PortTests.cpp
@@ -52,3 +53,15 @@ shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Face
 # .glsl files rather than one, which is what a multi-buffer page is.
 shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/TrailBuffer.glsl NAME TrailBuffer)
 shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/TrailImage.glsl NAME TrailImage)
+
+# Stage 9: the preprocessor a real Shadertoy is written through, and a colour
+# built one component at a time - which is the whole value rebuilt, since that
+# is all either shading language under the EDSL has.
+shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Macros.glsl NAME Macros)
+shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Compose.glsl NAME Compose)
+
+# Stage 9 in eacp's own column: transpose() and determinant(), the two matrix
+# operations both shading languages have. Basis carries an orientation and goes
+# back through it with the transpose, which for an orthonormal frame is the
+# inverse neither language has.
+shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Basis.glsl NAME Basis)

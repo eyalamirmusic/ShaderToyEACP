@@ -151,9 +151,9 @@ auto tCompoundKeepsGrouping = test("Glsl/compoundAssignmentGrouping") = []
     check(contains(result.code, "v = v - (iTime + 1.0f);"));
 };
 
-// Object-like macros are resolved in the lexer: leaving them to the parser
-// would fail shaders over notation rather than over any missing capability.
-// Function-like ones are a real gap and say so.
+// Macros are resolved in the lexer: leaving them to the parser would fail
+// shaders over notation rather than over any missing capability, and a real
+// Shadertoy names its resolution with one.
 auto tPreprocessor = test("Glsl/objectLikeDefines") = []
 {
     auto expanded = transpile("#define SCALE 8.0\n"
@@ -165,15 +165,103 @@ auto tPreprocessor = test("Glsl/objectLikeDefines") = []
 
     check(expanded.ok());
     check(contains(expanded.code, "p * 8.0f"));
+};
 
-    auto functionLike = transpile("#define SQ(x) ((x) * (x))\n"
-                                  "void mainImage(out vec4 o, in vec2 p)\n"
-                                  "{\n"
-                                  "    o = vec4(p, 0.0, 1.0);\n"
-                                  "}\n",
-                                  "TestShader");
+// A function-like macro is substituted argument by argument, and its result is
+// rescanned - so a macro spelled in terms of another one resolves whichever
+// order they were written in.
+auto tFunctionLikeDefines = test("Glsl/functionLikeDefines") = []
+{
+    auto result = transpile("#define R iResolution.xy\n"
+                            "#define SQ(x) ((x) * (x))\n"
+                            "#define SUM(a, b) (SQ(a) + SQ(b))\n"
+                            "void mainImage(out vec4 o, in vec2 p)\n"
+                            "{\n"
+                            "    vec2 uv = p / R;\n"
+                            "    o = vec4(SUM(uv.x, uv.y), 0.0, 0.0, 1.0);\n"
+                            "}\n",
+                            "TestShader");
 
-    check(countOf(functionLike, Glsl::DiagnosticKind::Preprocessor) == 1);
+    check(result.ok());
+    check(contains(result.code, "auto uv = p / iResolution.xy();"));
+    check(contains(result.code, "uv.x() * uv.x() + uv.y() * uv.y()"));
+};
+
+// A comma inside a nested call belongs to the argument it sits in, and a macro
+// handed its own invocation expands both - which only holds because an argument
+// is expanded before it is substituted rather than during the rescan.
+auto tMacroArguments = test("Glsl/macroArgumentsNest") = []
+{
+    auto result = transpile("#define MX(a, b) max(a, b)\n"
+                            "void mainImage(out vec4 o, in vec2 p)\n"
+                            "{\n"
+                            "    float v = MX(MX(p.x, p.y), min(p.x, p.y));\n"
+                            "    o = vec4(v, 0.0, 0.0, 1.0);\n"
+                            "}\n",
+                            "TestShader");
+
+    check(result.ok());
+    check(contains(result.code, "max(max(p.x(), p.y()), min(p.x(), p.y()))"));
+};
+
+// A macro that names itself stops at its own name rather than running away,
+// which is the rule that lets a shader redefine a builtin in terms of itself.
+auto tSelfReferentialMacro = test("Glsl/selfReferentialMacro") = []
+{
+    auto result = transpile("#define length(v) (length(v) * 2.0)\n"
+                            "void mainImage(out vec4 o, in vec2 p)\n"
+                            "{\n"
+                            "    o = vec4(length(p), 0.0, 0.0, 1.0);\n"
+                            "}\n",
+                            "TestShader");
+
+    check(result.ok());
+    check(contains(result.code, "length(p) * 2.0f"));
+};
+
+// The `#if` family decides which half of a shader the parser ever sees. A
+// branch not taken defines nothing and reports nothing, so a gap inside it is
+// not a gap in the shader.
+auto tConditionalDirectives = test("Glsl/conditionalDirectives") = []
+{
+    auto result = transpile("#define QUALITY 2\n"
+                            "#if QUALITY > 1 && !defined(CHEAP)\n"
+                            "#define TINT 0.75\n"
+                            "#else\n"
+                            "#define TINT 0.25\n"
+                            "  this is not even GLSL\n"
+                            "#endif\n"
+                            "void mainImage(out vec4 o, in vec2 p)\n"
+                            "{\n"
+                            "#ifdef NEVER\n"
+                            "    o = texture(iChannel3, p);\n"
+                            "#else\n"
+                            "    o = vec4(p.x * TINT, 0.0, 0.0, 1.0);\n"
+                            "#endif\n"
+                            "}\n",
+                            "TestShader");
+
+    check(result.ok());
+    check(contains(result.code, "p.x() * 0.75f"));
+    check(!contains(result.code, "iChannel3"));
+};
+
+// A hex constant is one number and not a zero followed by a name, which is the
+// only way every hash a shader multiplies by arrives intact.
+auto tHexLiterals = test("Glsl/hexLiterals") = []
+{
+    auto result = transpile("#define STEPS 0x4\n"
+                            "void mainImage(out vec4 o, in vec2 p)\n"
+                            "{\n"
+                            "    float v = 0.0;\n"
+                            "    for (int i = 0; i < STEPS; i++)\n"
+                            "        v += p.x;\n"
+                            "    o = vec4(v, 0.0, 0.0, 1.0);\n"
+                            "}\n",
+                            "TestShader");
+
+    check(result.ok());
+    check(countOccurrences(result.code, "p.x()") == 4);
 };
 
 // The parameter names carry through, so a port reads like its source rather
@@ -198,17 +286,16 @@ auto tParameterNames = test("Glsl/keepsParameterNames") = []
 // everything.
 auto tCollectsEveryGap = test("Glsl/collectsEveryGap") = []
 {
-    auto result =
-        convert("    vec3 col = vec3(0.0);\n"
-                "    for (float t = 0.0; t < iTime; t += 1.0)\n"
-                "        col += determinant(mat2(t, 0.0, 0.0, t));\n"
-                "    if (col.x > 1.0) { col += transpose(mat2(col.x))[0]; }\n"
-                "    fragColor = vec4(col, 1.0);");
+    auto result = convert(
+        "    vec3 col = vec3(0.0);\n"
+        "    for (float t = 0.0; t < iTime; t += 1.0)\n"
+        "        col.x += determinant(inverse(mat2(t, 0.0, 0.0, t)));\n"
+        "    if (col.x > 1.0) { do { col.y += 1.0; } while (col.y < 2.0); }\n"
+        "    fragColor = vec4(col, 1.0);");
 
     check(!result.ok());
-    check(
-        reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, "determinant"));
-    check(reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, "transpose"));
+    check(reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, "inverse"));
+    check(reports(result, Glsl::DiagnosticKind::ControlFlow, "do"));
 
     // Recovery left the surrounding shader intact.
     check(contains(result.code, "auto fragColor = float4(col(), 1.0f);"));
@@ -744,12 +831,119 @@ auto tStructFieldWrite = test("Glsl/structFieldWriteIsNotAComponentWrite") = []
     check(result.diagnostics.empty());
     check(contains(result.code, "hit_distance = fragCoord.x();"));
 
-    // A component of a vector still is one, and still says so.
-    auto component = convert("    vec3 col = vec3(0.0);\n"
-                             "    col.x = 1.0;\n"
-                             "    fragColor = vec4(col, 1.0);");
+    // A component of a field is a component write of the field, which resolves
+    // the path first and rebuilds only what is at the end of it.
+    auto nested = convertWithHit("void mainImage(out vec4 fragColor, in vec2 p)\n"
+                                 "{\n"
+                                 "    Hit hit = Hit(0.0, vec3(0.0));\n"
+                                 "    hit.albedo.g = p.x;\n"
+                                 "    fragColor = vec4(hit.albedo, 1.0);\n"
+                                 "}\n");
 
-    check(reports(component, Glsl::DiagnosticKind::ComponentAssignment, ".x"));
+    check(nested.ok());
+    check(contains(nested.code,
+                   "hit_albedo = float3(hit_albedo.x(), p.x(), hit_albedo.z());"));
+};
+
+// Writing part of a value is the whole value rebuilt from the components the
+// write names and the ones it leaves alone, which is what both shading
+// languages under the EDSL would have made a shader write out anyway.
+auto tComponentWrite = test("Glsl/componentWriteRebuilds") = []
+{
+    auto result = convert("    vec2 uv = fragCoord / iResolution.xy;\n"
+                          "    vec3 col = vec3(0.1, 0.2, 0.3);\n"
+                          "    col.x += uv.x;\n"
+                          "    col.zy = uv;\n"
+                          "    fragColor = vec4(col, 1.0);");
+
+    check(result.ok());
+    check(
+        contains(result.code, "col = float3(col.x() + uv.x(), col.y(), col.z());"));
+
+    // The written components land where the swizzle put them, not in the order
+    // they were spelled: `col.zy = uv` is z from uv.x and y from uv.y.
+    check(contains(result.code, "col = float3(col.x(), uv.y(), uv.x());"));
+};
+
+// The out parameter is written rather than declared, so a shader that fills it
+// a component at a time is filling something with no previous value - which is
+// undefined in GLSL, and zero here.
+auto tComponentWriteToOutParameter = test("Glsl/componentWriteToOutParameter") = []
+{
+    auto result = convert("    vec3 col = vec3(1.0, 0.5, 0.25);\n"
+                          "    fragColor.rgb = col;\n"
+                          "    fragColor.a = 1.0;");
+
+    check(result.ok());
+    check(contains(result.code,
+                   "auto fragColor = float4(col.x(), col.y(), col.z(), 0.0f);"));
+    check(contains(result.code,
+                   "fragColor = float4(fragColor.x(), fragColor.y(), "
+                   "fragColor.z(), 1.0f);"));
+};
+
+// A value landing in more than one component is read once. eacp's emitter
+// shares by node identity rather than by shape, so a value spelled out per
+// component would be a subtree the shader really did evaluate that many times.
+auto tComponentWriteNamesItsValue = test("Glsl/componentWriteNamesItsValue") = []
+{
+    auto result = convert("    vec2 uv = fragCoord / iResolution.xy;\n"
+                          "    vec4 p = vec4(0.0);\n"
+                          "    p.xy = uv * 2.0 + 1.0;\n"
+                          "    fragColor = p;");
+
+    check(result.ok());
+    check(contains(result.code, "auto p_xy = uv * 2.0f + 1.0f;"));
+    check(countOccurrences(result.code, "uv * 2.0f") == 1);
+};
+
+// A component write inside a loop is a write to the variable the loop kept,
+// which is the same rebuild against the value the previous iteration left.
+auto tComponentWriteInALoop = test("Glsl/componentWriteInALoop") = []
+{
+    auto result = convert("    vec3 col = vec3(0.0);\n"
+                          "    float t = 0.0;\n"
+                          "    while (t < iTime)\n"
+                          "    {\n"
+                          "        col.r += 0.01;\n"
+                          "        t += 0.1;\n"
+                          "    }\n"
+                          "    fragColor = vec4(col, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "auto col = var(float3("));
+    check(contains(result.code,
+                   "col = float3(col().x() + 0.01f, col().y(), col().z());"));
+};
+
+// What is left is what really has no whole value to rebuild: a matrix column,
+// and a swizzle naming one component twice, which GLSL does not allow either.
+auto tComponentWriteGaps = test("Glsl/componentWriteGapsReported") = []
+{
+    auto column = convert("    mat2 m = mat2(1.0, 0.0, 0.0, 1.0);\n"
+                          "    m[0] = vec2(2.0, 0.0);\n"
+                          "    fragColor = vec4(m * fragCoord, 0.0, 1.0);");
+
+    check(reports(
+        column, Glsl::DiagnosticKind::ComponentAssignment, "indexed target"));
+
+    auto repeated = convert("    vec3 col = vec3(0.0);\n"
+                            "    col.xx = vec2(1.0, 2.0);\n"
+                            "    fragColor = vec4(col, 1.0);");
+
+    check(reports(repeated, Glsl::DiagnosticKind::ComponentAssignment, ".xx"));
+};
+
+// A swizzle binds tighter than any operator, so the object of one has to carry
+// the parentheses the GLSL wrote it with.
+auto tSwizzleOfASum = test("Glsl/swizzleOfASumIsGrouped") = []
+{
+    auto result = convert("    vec2 uv = fragCoord / iResolution.xy;\n"
+                          "    float v = (uv + iTime).x;\n"
+                          "    fragColor = vec4(v, 0.0, 0.0, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "(uv + iTime).x()"));
 };
 
 // A struct through an out parameter, which is the write-back path a field at a
@@ -839,24 +1033,53 @@ auto tUnrollingDoesNotInflate = test("Glsl/unrollingCountsGapsOnce") = []
 {
     auto result = convert("    float total = 0.0;\n"
                           "    for (int i = 0; i < 16; i++)\n"
-                          "        total += determinant(mat2(float(i)));\n"
+                          "        total += determinant(inverse(mat2(float(i))));\n"
                           "    fragColor = vec4(total, 0.0, 0.0, 1.0);");
 
     check(countOf(result, Glsl::DiagnosticKind::UnsupportedIntrinsic) == 1);
 };
 
 // Named so the report groups two shaders blocked by the same builtin together.
-// What is left after stage 3 is the matrix vocabulary: the EDSL can build a
-// Float2x2 and multiply one, and that is where it stops.
+// What is left of the matrix vocabulary is inverse, and it is left because
+// neither shading language under the EDSL has one either - GLSL is the odd one.
 auto tIntrinsicNames = test("Glsl/intrinsicsAreNamed") = []
 {
-    for (auto builtin: {"transpose", "inverse", "determinant"})
-    {
-        auto result = convert(std::string("    fragColor = vec4(") + "float("
-                              + builtin + "(mat2(iTime))), 0.0, 0.0, 1.0);");
+    auto result = convert("    fragColor = vec4(float(inverse(mat2(iTime))[0].x),"
+                          " 0.0, 0.0, 1.0);");
 
-        check(reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, builtin));
+    check(reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, "inverse"));
+};
+
+// The two beside it that both languages do have. A matrix built from nine
+// components regroups into three columns on the way out, which is also the one
+// shape the wrapping path had no argument nodes left to re-walk.
+auto tMatrixTranspose = test("Glsl/transposeAndDeterminant") = []
+{
+    auto result =
+        convert("    mat3 m = mat3(iTime, 0.0, 0.0, 0.0, iTime, 0.0, 0.0, 0.0,"
+                " iTime);\n"
+                "    vec3 v = transpose(m) * vec3(fragCoord, 1.0);\n"
+                "    fragColor = vec4(v * determinant(m), 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "transpose(m)"));
+    check(contains(result.code, "determinant(m)"));
+
+    auto longest = std::size_t {0};
+    auto start = std::size_t {0};
+
+    while (start <= result.code.size())
+    {
+        auto end = result.code.find('\n', start);
+
+        if (end == std::string::npos)
+            end = result.code.size();
+
+        longest = std::max(longest, end - start);
+        start = end + 1;
     }
+
+    check(longest <= 85);
 };
 
 // A helper whose body is one expression is replaced by that expression. An
@@ -922,7 +1145,7 @@ auto tUserFunctions = test("Glsl/userFunctionsReported") = []
     auto result = transpile("float sdBox(vec2 p)\n"
                             "{\n"
                             "    if (p.x > 0.0) return 1.0;\n"
-                            "    return determinant(mat2(p.y));\n"
+                            "    return determinant(inverse(mat2(p.y)));\n"
                             "}\n"
                             "void mainImage(out vec4 o, in vec2 p)\n"
                             "{\n"
@@ -932,8 +1155,7 @@ auto tUserFunctions = test("Glsl/userFunctionsReported") = []
 
     check(reports(result, Glsl::DiagnosticKind::UserFunction, "sdBox"));
     check(reports(result, Glsl::DiagnosticKind::ControlFlow, "early return"));
-    check(
-        reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, "determinant"));
+    check(reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, "inverse"));
 };
 
 // A channel read is a sample, and the port declares the channel it read. The

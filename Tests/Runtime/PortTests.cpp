@@ -1,5 +1,6 @@
 #include "Common.h"
 
+#include <Basis.h>
 #include <Channels.h>
 #include <Checker.h>
 #include <Fbm.h>
@@ -202,4 +203,24 @@ auto tPalettePortCompiles = test("Ports/readsAConstantArray") = []
         ++declarations;
 
     check(declarations == 1);
+};
+
+// Stage 9's eacp half, which the report cannot see and only a shader compiler
+// can: transpose() and determinant() are names, and whether the language behind
+// each backend actually has them is settled where the source is compiled.
+// Building the port at all is most of the check; the rest is that both reached
+// the emitted stage rather than being folded away.
+auto tBasisPortCompiles = test("Ports/transposesAMatrix") = []
+{
+    auto shader = Shadertoy::Ports::Basis {};
+    const auto& source = shader.source();
+
+    check(!source.source.empty());
+    check(contains(source.source, "transpose("));
+    check(contains(source.source, "determinant("));
+
+    // On this backend the construction emits no transpose of its own, so every
+    // one in the source is the shader's. On HLSL there would be one more per
+    // matrix built, which is the nesting eacp's own codegen test pins.
+    check(contains(source.source, "float3x3("));
 };
