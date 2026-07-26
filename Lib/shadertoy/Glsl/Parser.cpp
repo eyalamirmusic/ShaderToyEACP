@@ -391,7 +391,7 @@ private:
         auto type = advance().text;
 
         if (type == "bool" || type.rfind("ivec", 0) == 0
-            || type.rfind("bvec", 0) == 0 || type == "mat2" || type == "mat3")
+            || type.rfind("bvec", 0) == 0)
             report(DiagnosticKind::UnsupportedType, type);
 
         do

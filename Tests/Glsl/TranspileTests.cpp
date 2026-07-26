@@ -62,10 +62,9 @@ auto tStraightLine = test("Glsl/straightLineConverts") = []
     check(contains(result.code, "struct TestShader final : Program"));
 };
 
-// GLSL's three component sets all mean x/y/z/w, and the EDSL exposes the
-// single components plus the two leading runs. Anything reordered or offset -
-// .zw, .yx - has no accessor, and saying so is more useful than emitting a
-// call that will not compile without explanation.
+// GLSL's three component sets all mean x/y/z/w, and stage 3 gave the EDSL an
+// accessor for every ordering of up to four of them - so a reordered or offset
+// swizzle is now one call, and stays one node in the graph behind it.
 auto tSwizzles = test("Glsl/swizzleMapping") = []
 {
     auto colours = convert("    fragColor = vec4(iMouse.xy, iResolution.z, 1.0);");
@@ -78,9 +77,14 @@ auto tSwizzles = test("Glsl/swizzleMapping") = []
     check(named.ok());
     check(contains(named.code, "iResolution.xyz()"));
 
-    auto reordered = convert("    fragColor = vec4(iMouse.zw, 0.0, 1.0);");
-    check(!reordered.ok());
-    check(reports(reordered, Glsl::DiagnosticKind::UnsupportedSwizzle, ".zw"));
+    auto reordered = convert("    fragColor = vec4(iMouse.zw, iMouse.yx);");
+    check(reordered.ok());
+    check(contains(reordered.code, "iMouse.zw()"));
+    check(contains(reordered.code, "iMouse.yx()"));
+
+    auto wide = convert("    fragColor = iMouse.bgra;");
+    check(wide.ok());
+    check(contains(wide.code, "iMouse.zyxw()"));
 };
 
 // A vector built only from literals has no value handle to take a graph from,
@@ -178,25 +182,90 @@ auto tParameterNames = test("Glsl/keepsParameterNames") = []
 };
 
 // The point of the whole exercise: one shader reports every wall it hits, not
-// the first. A loop that will not unroll does not stop the atan below it from
-// being counted, because the coverage table is only useful if it sees
+// the first. A loop that will not unroll does not stop the determinant below it
+// from being counted, because the coverage table is only useful if it sees
 // everything.
 auto tCollectsEveryGap = test("Glsl/collectsEveryGap") = []
 {
     auto result = convert("    vec3 col = vec3(0.0);\n"
                           "    for (float t = 0.0; t < iTime; t += 1.0)\n"
                           "        col += 0.1;\n"
-                          "    col += atan(fragCoord.x);\n"
+                          "    col += determinant(mat2(iTime, 0.0, 0.0, iTime));\n"
                           "    if (col.x > 1.0) { col = vec3(1.0); }\n"
                           "    fragColor = vec4(col, 1.0);");
 
     check(!result.ok());
     check(reports(result, Glsl::DiagnosticKind::ControlFlow, "for"));
     check(reports(result, Glsl::DiagnosticKind::ControlFlow, "if"));
-    check(reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, "atan"));
+    check(
+        reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, "determinant"));
 
     // Recovery left the surrounding shader intact.
     check(contains(result.code, "auto fragColor = float4(col, 1.0f);"));
+};
+
+// The intrinsics stage 3 closed, and the two places GLSL and the EDSL disagree
+// on how to spell one: atan picks its name by argument count, and inversesqrt
+// is rsqrt, the way both shading languages have it.
+auto tStageThreeIntrinsics = test("Glsl/stageThreeIntrinsics") = []
+{
+    auto result = convert("    float a = atan(fragCoord.y, fragCoord.x);\n"
+                          "    float b = atan(a) + tan(a) + asin(a) + acos(a);\n"
+                          "    float c = exp(b) + log(b) + exp2(b) + log2(b);\n"
+                          "    float d = mod(c, 2.0) + sign(c) + inversesqrt(c);\n"
+                          "    float e = ceil(d) + round(d) + trunc(d);\n"
+                          "    vec3 n = normalize(vec3(a, b, c));\n"
+                          "    vec3 f = reflect(n, n) + refract(n, n, 0.5);\n"
+                          "    float g = distance(n, f) + fwidth(e) + dFdx(e);\n"
+                          "    fragColor = vec4(f * g, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "atan2(fragCoord.y(), fragCoord.x())"));
+    check(contains(result.code, "atan(a)"));
+    check(contains(result.code, "rsqrt(c)"));
+    check(contains(result.code, "mod(c, 2.0f)"));
+    check(contains(result.code, "dfdx(e)"));
+    check(contains(result.code, "refract(n, n, 0.5f)"));
+};
+
+// GLSL fills a matrix column by column, so mat2(c, s, -s, c) - the rotation
+// every second procedural shader opens with - is the columns (c, s) and
+// (-s, c), and the EDSL's constructor takes exactly those.
+auto tMatrixConstructors = test("Glsl/matrixConstructors") = []
+{
+    auto rotation = convert("    float c = cos(iTime);\n"
+                            "    float s = sin(iTime);\n"
+                            "    mat2 m = mat2(c, s, -s, c);\n"
+                            "    fragColor = vec4(m * fragCoord, 0.0, 1.0);");
+
+    check(rotation.ok());
+    check(contains(rotation.code, "float2x2(float2(c, s), float2(-s, c))"));
+    check(contains(rotation.code, "m * fragCoord"));
+
+    // Column vectors pass straight through, and a lone scalar is the diagonal.
+    auto columns = convert("    mat3 m = mat3(vec3(iTime), vec3(0.0), vec3(1.0));\n"
+                           "    fragColor = vec4(m * vec3(fragCoord, 1.0), 1.0);");
+    check(columns.ok());
+    check(contains(columns.code, "float3x3(float3(iTime, iTime, iTime)"));
+
+    auto diagonal = convert("    mat2 m = mat2(iTime);\n"
+                            "    fragColor = vec4(m * fragCoord, 0.0, 1.0);");
+    check(diagonal.ok());
+    check(contains(diagonal.code,
+                   "float2x2(float2(iTime, 0.0f), float2(0.0f, iTime))"));
+};
+
+// GLSL reads `vector * matrix` as the row vector on the left, which is the
+// transposed product - a different value from the one the EDSL spells, so it is
+// reported rather than quietly emitted the other way round.
+auto tVectorTimesMatrix = test("Glsl/vectorTimesMatrixIsReported") = []
+{
+    auto result = convert("    mat2 m = mat2(iTime, 0.0, 0.0, iTime);\n"
+                          "    vec2 v = fragCoord * m;\n"
+                          "    fragColor = vec4(v, 0.0, 1.0);");
+
+    check(!result.ok());
+    check(reports(result, Glsl::DiagnosticKind::UnsupportedType, "vector * matrix"));
 };
 
 // A loop bounded by a constant becomes that many copies of its body, with the
@@ -226,11 +295,11 @@ auto tDynamicLoopIsReported = test("Glsl/dynamicLoopStillCounted") = []
 {
     auto result = convert("    vec3 col = vec3(0.0);\n"
                           "    for (float t = 0.0; t < iTime; t += 1.0)\n"
-                          "        col += exp(t);\n"
+                          "        col += inverse(mat2(t, 0.0, 0.0, t))[0].x;\n"
                           "    fragColor = vec4(col, 1.0);");
 
     check(reports(result, Glsl::DiagnosticKind::ControlFlow, "for"));
-    check(reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, "exp"));
+    check(reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, "inverse"));
 };
 
 // Nested loops multiply out, the inner one unrolling once per copy of the
@@ -280,19 +349,21 @@ auto tUnrollingDoesNotInflate = test("Glsl/unrollingCountsGapsOnce") = []
 {
     auto result = convert("    float total = 0.0;\n"
                           "    for (int i = 0; i < 16; i++)\n"
-                          "        total += exp(float(i));\n"
+                          "        total += determinant(mat2(float(i)));\n"
                           "    fragColor = vec4(total, 0.0, 0.0, 1.0);");
 
     check(countOf(result, Glsl::DiagnosticKind::UnsupportedIntrinsic) == 1);
 };
 
 // Named so the report groups two shaders blocked by the same builtin together.
+// What is left after stage 3 is the matrix vocabulary: the EDSL can build a
+// Float2x2 and multiply one, and that is where it stops.
 auto tIntrinsicNames = test("Glsl/intrinsicsAreNamed") = []
 {
-    for (auto builtin: {"exp", "log", "mod", "sign", "reflect", "fwidth"})
+    for (auto builtin: {"transpose", "inverse", "determinant"})
     {
-        auto result = convert(std::string("    fragColor = vec4(") + builtin
-                              + "(fragCoord.x, 1.0), 0.0, 0.0, 1.0);");
+        auto result = convert(std::string("    fragColor = vec4(") + "float("
+                              + builtin + "(mat2(iTime))), 0.0, 0.0, 1.0);");
 
         check(reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, builtin));
     }
@@ -361,7 +432,7 @@ auto tUserFunctions = test("Glsl/userFunctionsReported") = []
     auto result = transpile("float sdBox(vec2 p)\n"
                             "{\n"
                             "    if (p.x > 0.0) return 1.0;\n"
-                            "    return atan(p.y);\n"
+                            "    return determinant(mat2(p.y));\n"
                             "}\n"
                             "void mainImage(out vec4 o, in vec2 p)\n"
                             "{\n"
@@ -371,7 +442,8 @@ auto tUserFunctions = test("Glsl/userFunctionsReported") = []
 
     check(reports(result, Glsl::DiagnosticKind::UserFunction, "sdBox"));
     check(reports(result, Glsl::DiagnosticKind::ControlFlow, "if"));
-    check(reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, "atan"));
+    check(
+        reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, "determinant"));
 };
 
 // Texture channels arrive with stage 4; until then they are their own category
@@ -409,4 +481,32 @@ auto tColumnLimit = test("Glsl/respectsColumnLimit") = []
     }
 
     check(longest <= 85);
+};
+
+// Wrapping re-walks the argument nodes rather than the text the call already
+// emitted, so it has to reach the same name a second time. Every builtin the
+// EDSL spells differently from GLSL is a chance to lose that: a wrapped
+// inversesqrt that came back as inversesqrt would not compile, and neither
+// would a two-argument atan that came back without its 2.
+auto tWrappedCallsKeepTheirName = test("Glsl/wrappedCallsKeepEdslName") = []
+{
+    auto result = convert(
+        "    float v = inversesqrt(fragCoord.x * 8.0 + iTime * 1.25 + 1.0);\n"
+        "    float w = atan(fragCoord.y * 8.0 + iTime, fragCoord.x - 4.0);\n"
+        "    fragColor = vec4(v, w, 0.0, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "rsqrt("));
+    check(!contains(result.code, "inversesqrt("));
+    check(contains(result.code, "atan2("));
+
+    // A matrix constructor regroups its arguments into columns, so it has no
+    // name(args...) form to wrap into and stays whole.
+    auto matrix = convert("    mat2 m = mat2(cos(iTime) * 1.5, sin(iTime) * 1.5,\n"
+                          "                  -sin(iTime) * 1.5, cos(iTime) * 1.5);\n"
+                          "    fragColor = vec4(m * fragCoord, 0.0, 1.0);");
+
+    check(matrix.ok());
+    check(contains(matrix.code, "float2x2(float2("));
+    check(!contains(matrix.code, "mat2("));
 };

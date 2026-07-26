@@ -19,7 +19,9 @@ enum class Type
     Vec2,
     Vec3,
     Vec4,
-    Matrix
+    Mat2,
+    Mat3,
+    Mat4
 };
 
 int componentsOf(Type type)
@@ -34,12 +36,31 @@ int componentsOf(Type type)
             return 3;
         case Type::Vec4:
             return 4;
-        case Type::Matrix:
+        case Type::Mat2:
+        case Type::Mat3:
+        case Type::Mat4:
         case Type::Unknown:
             return 0;
     }
 
     return 0;
+}
+
+// The width of a square matrix's columns, and the number of them; zero for
+// anything that is not one.
+int matrixOrder(Type type)
+{
+    switch (type)
+    {
+        case Type::Mat2:
+            return 2;
+        case Type::Mat3:
+            return 3;
+        case Type::Mat4:
+            return 4;
+        default:
+            return 0;
+    }
 }
 
 Type typeOfWidth(int components)
@@ -69,10 +90,31 @@ Type typeFromGlslName(std::string_view name)
         return Type::Vec3;
     if (name == "vec4")
         return Type::Vec4;
-    if (name == "mat2" || name == "mat3" || name == "mat4")
-        return Type::Matrix;
+    if (name == "mat2")
+        return Type::Mat2;
+    if (name == "mat3")
+        return Type::Mat3;
+    if (name == "mat4")
+        return Type::Mat4;
 
     return Type::Unknown;
+}
+
+// The EDSL's spelling of a matrix type, which follows the shading languages
+// rather than GLSL: float2x2 for a mat2.
+const char* edslMatrixName(Type type)
+{
+    switch (type)
+    {
+        case Type::Mat2:
+            return "float2x2";
+        case Type::Mat3:
+            return "float3x3";
+        case Type::Mat4:
+            return "float4x4";
+        default:
+            return nullptr;
+    }
 }
 
 // Where a builtin's result shape comes from. GLSL's rules are per-function -
@@ -93,15 +135,33 @@ struct Builtin
     const char* glsl;
     const char* edsl; // null where the EDSL has no spelling for it
     ResultShape shape;
+
+    // Where GLSL overloads one name on argument count and the EDSL spells the
+    // two forms apart: atan(y, x) is atan2. Null when there is no second form.
+    const char* edslBinary = nullptr;
 };
 
 constexpr Builtin builtins[] = {
     {"sin", "sin", ResultShape::LikeArg0},
     {"cos", "cos", ResultShape::LikeArg0},
+    {"tan", "tan", ResultShape::LikeArg0},
+    {"asin", "asin", ResultShape::LikeArg0},
+    {"acos", "acos", ResultShape::LikeArg0},
+    {"atan", "atan", ResultShape::LikeArg0, "atan2"},
     {"abs", "abs", ResultShape::LikeArg0},
     {"floor", "floor", ResultShape::LikeArg0},
+    {"ceil", "ceil", ResultShape::LikeArg0},
+    {"round", "round", ResultShape::LikeArg0},
+    {"trunc", "trunc", ResultShape::LikeArg0},
+    {"sign", "sign", ResultShape::LikeArg0},
     {"fract", "fract", ResultShape::LikeArg0},
+    {"mod", "mod", ResultShape::LikeArg0},
     {"sqrt", "sqrt", ResultShape::LikeArg0},
+    {"inversesqrt", "rsqrt", ResultShape::LikeArg0},
+    {"exp", "exp", ResultShape::LikeArg0},
+    {"exp2", "exp2", ResultShape::LikeArg0},
+    {"log", "log", ResultShape::LikeArg0},
+    {"log2", "log2", ResultShape::LikeArg0},
     {"normalize", "normalize", ResultShape::LikeArg0},
     {"min", "min", ResultShape::LikeArg0},
     {"max", "max", ResultShape::LikeArg0},
@@ -110,32 +170,20 @@ constexpr Builtin builtins[] = {
     {"mix", "mix", ResultShape::LikeArg0},
     {"step", "step", ResultShape::LikeArg1},
     {"smoothstep", "smoothstep", ResultShape::LikeArg2},
+    {"reflect", "reflect", ResultShape::LikeArg0},
+    {"refract", "refract", ResultShape::LikeArg0},
+    {"faceforward", "faceforward", ResultShape::LikeArg0},
+    {"dFdx", "dfdx", ResultShape::LikeArg0},
+    {"dFdy", "dfdy", ResultShape::LikeArg0},
+    {"fwidth", "fwidth", ResultShape::LikeArg0},
     {"length", "length", ResultShape::Scalar},
+    {"distance", "distance", ResultShape::Scalar},
     {"dot", "dot", ResultShape::Scalar},
     {"cross", "cross", ResultShape::Vec3},
 
-    // Everything below is a gap: GLSL has it, the EDSL does not.
-    {"atan", nullptr, ResultShape::LikeArg0},
-    {"tan", nullptr, ResultShape::LikeArg0},
-    {"asin", nullptr, ResultShape::LikeArg0},
-    {"acos", nullptr, ResultShape::LikeArg0},
-    {"exp", nullptr, ResultShape::LikeArg0},
-    {"exp2", nullptr, ResultShape::LikeArg0},
-    {"log", nullptr, ResultShape::LikeArg0},
-    {"log2", nullptr, ResultShape::LikeArg0},
-    {"mod", nullptr, ResultShape::LikeArg0},
-    {"sign", nullptr, ResultShape::LikeArg0},
-    {"ceil", nullptr, ResultShape::LikeArg0},
-    {"round", nullptr, ResultShape::LikeArg0},
-    {"trunc", nullptr, ResultShape::LikeArg0},
-    {"inversesqrt", nullptr, ResultShape::LikeArg0},
-    {"reflect", nullptr, ResultShape::LikeArg0},
-    {"refract", nullptr, ResultShape::LikeArg0},
-    {"faceforward", nullptr, ResultShape::LikeArg0},
-    {"distance", nullptr, ResultShape::Scalar},
-    {"dFdx", nullptr, ResultShape::LikeArg0},
-    {"dFdy", nullptr, ResultShape::LikeArg0},
-    {"fwidth", nullptr, ResultShape::LikeArg0},
+    // Everything below is a gap: GLSL has it, the EDSL does not. The matrix
+    // three need an operation on Float2x2/Float3x3 beyond construction and
+    // multiplication, which is where those types stop today.
     {"transpose", nullptr, ResultShape::LikeArg0},
     {"inverse", nullptr, ResultShape::LikeArg0},
     {"determinant", nullptr, ResultShape::Scalar},
@@ -449,9 +497,45 @@ private:
         }
 
         if (expr.kind == ExprKind::Call && !expr.args.empty())
-            return layoutCall(expr, column, trailing, indent);
+        {
+            auto callee = wrappableCallName(node, expr);
+
+            if (!callee.empty())
+                return layoutCall(callee, expr, column, trailing, indent);
+        }
 
         return single;
+    }
+
+    // The name a call emits under, when it emits as name(args...) over exactly
+    // the arguments it was parsed with - the only shape the wrapping layout can
+    // rebuild, since it re-walks the argument nodes rather than the text
+    // emitCall produced. A constructor that regroups its arguments into columns,
+    // repeats a broadcast scalar or anchors one with constant() has no such
+    // form, and stays on one line.
+    std::string wrappableCallName(int node, const Expr& expr)
+    {
+        auto width = vectorConstructorWidth(expr.text);
+
+        if (width > 0)
+        {
+            auto broadcasts = expr.args.size() == 1
+                              && typeOf(expr.args[0]) == Type::Float && width > 1;
+
+            if (broadcasts || !mentionsAName(node))
+                return {};
+
+            return "float" + std::to_string(width);
+        }
+
+        const auto* builtin = findBuiltin(expr.text);
+
+        if (builtin == nullptr || builtin->edsl == nullptr)
+            return {};
+
+        return builtin->edslBinary != nullptr && expr.args.size() == 2
+                   ? builtin->edslBinary
+                   : builtin->edsl;
     }
 
     std::string layoutChain(const Vector<std::pair<std::string, int>>& terms,
@@ -486,13 +570,14 @@ private:
 
     // The argument list filled greedily, so a call that runs long breaks where
     // it has to rather than once per argument.
-    std::string layoutCall(const Expr& expr,
+    std::string layoutCall(const std::string& callee,
+                           const Expr& expr,
                            int column,
                            int trailing,
                            const std::string& indent)
     {
         auto inner = indent + "    ";
-        auto text = expr.text + "(";
+        auto text = callee + "(";
         auto at = column + (int) text.size();
 
         for (auto index = 0; index < expr.args.size(); ++index)
@@ -504,6 +589,11 @@ private:
 
             if (at + (int) argument.size() + reserved > columnLimit)
             {
+                // The space after the previous comma belongs to an argument
+                // that turned out to start on the next line instead.
+                if (!text.empty() && text.back() == ' ')
+                    text.pop_back();
+
                 text += "\n" + indent;
                 at = (int) indent.size();
                 argument = layoutExpression(expr.args[index], at, reserved, inner);
@@ -793,10 +883,24 @@ private:
         auto right = emitOperand(expr.args[1], precedence, true);
 
         if (precedenceOf(expr.text) > 0 && expr.text != "%")
-            return left + " " + expr.text + " " + right;
+        {
+            // GLSL reads `vector * matrix` as the row vector on the left, which
+            // is the transposed product - a different value from the matrix *
+            // vector the EDSL spells, not a missing overload.
+            if (expr.text == "*" && matrixOrder(typeOf(expr.args[1])) > 0
+                && componentsOf(typeOf(expr.args[0])) > 1)
+            {
+                report(DiagnosticKind::UnsupportedType, "vector * matrix");
+                return "/* unsupported: vector * matrix */ (" + left + ")";
+            }
 
+            return left + " " + expr.text + " " + right;
+        }
+
+        // GLSL defines % on integers only, so what a shader reaching it needs
+        // is the integer type, not a modulus - mod() is spelled for floats.
         if (expr.text == "%")
-            report(DiagnosticKind::UnsupportedIntrinsic, "mod");
+            report(DiagnosticKind::UnsupportedType, "int %");
         else
             report(DiagnosticKind::ControlFlow, expr.text);
 
@@ -821,10 +925,9 @@ private:
             canonical += mapped;
         }
 
-        // The EDSL exposes the single components plus the two leading runs;
-        // anything reordered or narrower, like .zw or .yx, has no accessor.
-        if (canonical == "x" || canonical == "y" || canonical == "z"
-            || canonical == "w" || canonical == "xy" || canonical == "xyz")
+        // The EDSL has an accessor for every ordering of up to four components,
+        // so .yx and .bgra are each one call and one Swizzle node.
+        if (!canonical.empty() && canonical.size() <= 4)
             return object + "." + canonical + "()";
 
         report(DiagnosticKind::UnsupportedSwizzle, "." + expr.text);
@@ -865,11 +968,10 @@ private:
                    + "0.0f, 0.0f, 1.0f)";
         }
 
-        if (expr.text == "mat2" || expr.text == "mat3" || expr.text == "mat4")
-        {
-            report(DiagnosticKind::UnsupportedType, expr.text);
-            return "/* unsupported: " + expr.text + " */ " + emitArguments(expr);
-        }
+        auto matrix = typeFromGlslName(expr.text);
+
+        if (matrixOrder(matrix) > 0)
+            return emitMatrixConstructor(node, expr, matrix);
 
         const auto* builtin = findBuiltin(expr.text);
 
@@ -887,7 +989,84 @@ private:
                    + emitArguments(expr) + ")";
         }
 
-        return std::string(builtin->edsl) + "(" + emitArguments(expr) + ")";
+        // GLSL overloads atan on argument count; the EDSL spells the
+        // quadrant-aware form atan2, the way both shading languages do.
+        auto spelling = builtin->edslBinary != nullptr && expr.args.size() == 2
+                            ? builtin->edslBinary
+                            : builtin->edsl;
+
+        return std::string(spelling) + "(" + emitArguments(expr) + ")";
+    }
+
+    // GLSL fills a matrix column by column, from either one column vector per
+    // column, or every component in column order, or a single scalar on the
+    // diagonal. The EDSL's constructors take the columns, so only the middle
+    // form has to be regrouped.
+    std::string emitMatrixConstructor(int node, const Expr& expr, Type type)
+    {
+        auto order = matrixOrder(type);
+        auto columns = Vector<std::string> {};
+
+        // One column vector per column: each argument already emits as a
+        // value, and one built only from literals anchors itself.
+        if ((int) expr.args.size() == order && typeOf(expr.args[0]) != Type::Float)
+        {
+            for (auto arg: expr.args)
+                columns.add(emitExpression(arg));
+
+            return joinMatrix(type, columns);
+        }
+
+        auto components = Vector<std::string> {};
+
+        if ((int) expr.args.size() == order * order)
+        {
+            for (auto arg: expr.args)
+                components.add(emitExpression(arg));
+        }
+        else if (expr.args.size() == 1 && typeOf(expr.args[0]) == Type::Float)
+        {
+            // mat2(s) puts s down the diagonal and zero everywhere else.
+            auto scalar = emitExpression(expr.args[0]);
+
+            for (auto column = 0; column < order; ++column)
+                for (auto row = 0; row < order; ++row)
+                    components.add(row == column ? scalar : "0.0f");
+        }
+        else
+        {
+            report(DiagnosticKind::UnsupportedType, expr.text);
+            return "/* unsupported: " + expr.text + " */ " + emitArguments(expr);
+        }
+
+        // Like a vector built only from literals, a matrix built only from them
+        // has no value handle to take a graph from - see emitVectorConstructor.
+        if (!mentionsAName(node))
+            components[0] = "constant(" + components[0] + ")";
+
+        auto columnName = "float" + std::to_string(order);
+
+        for (auto column = 0; column < order; ++column)
+        {
+            auto parts = std::string {};
+
+            for (auto row = 0; row < order; ++row)
+                parts += (row > 0 ? ", " : "") + components[column * order + row];
+
+            columns.add(columnName + "(" + parts + ")");
+        }
+
+        return joinMatrix(type, columns);
+    }
+
+    static std::string joinMatrix(Type type, const Vector<std::string>& columns)
+    {
+        auto text = std::string(edslMatrixName(type)) + "(";
+
+        for (auto index = 0; index < columns.size(); ++index)
+            text += (index > 0 ? ", " : "") + columns[index];
+
+        return text + ")";
     }
 
     std::string emitArguments(const Expr& expr)

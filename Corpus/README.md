@@ -16,7 +16,12 @@ a list of IDs and never vendored. See the licensing note in the root README.
 The set is chosen to span the gap ledger rather than to look impressive: a few
 shaders that convert cleanly, and several that each walk into a different wall.
 
-`Fbm.glsl` and `Voronoi.glsl` are also compiled as ports by `Tests/Runtime`, so
-what the transpiler emits for them has to satisfy a C++ compiler and not only
-the coverage report. Anything added here that converts cleanly is worth adding
-there too.
+`Fbm.glsl`, `Voronoi.glsl`, `Checker.glsl` and `Kaleido.glsl` are also compiled
+as ports by `Tests/Runtime`, so what the transpiler emits for them has to satisfy
+a C++ compiler and not only the coverage report. Anything added here that
+converts cleanly is worth adding there too.
+
+`Kaleido.glsl` is the stage 3 shader: it exists to put a `mat2`, the
+two-argument `atan`, `mod`, `exp`, `inversesqrt`, `sign` and swizzles of every
+width through the EDSL at once, so that "the intrinsics are done" is a thing the
+report and a compiler both agree on.

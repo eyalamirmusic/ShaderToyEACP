@@ -11,10 +11,11 @@ a matter of opinion into a measurement. Every shader that fails to convert names
 a specific gap, and the number of shaders blocked on each gap is what decides
 which one to close next.
 
-> **⚠️ Early days.** Stages 0 to 2 are done: straight-line GLSL converts,
-> constant-trip-count loops unroll, helper functions inline, and the generated
-> C++ compiles and runs. Branches, texture channels and data-dependent loops are
-> still ahead — see the plan and the coverage table below.
+> **⚠️ Early days.** Stages 0 to 3 are done: straight-line GLSL converts,
+> constant-trip-count loops unroll, helper functions inline, the intrinsic and
+> swizzle gaps are closed, and the generated C++ compiles and runs. Branches,
+> texture channels and data-dependent loops are still ahead — see the plan and
+> the coverage table below.
 
 ## Why this works better than it looks like it should
 
@@ -127,10 +128,14 @@ transpiler cannot count from hiding every intrinsic inside it.
 
 It found the first eacp gap the corpus paid for, too — see below.
 
-**Stage 3 — close the intrinsic gaps**, in the order the coverage table ranks
-them. Mechanical work in eacp's `ShaderValue.h`: `atan`/`atan2`, `exp`, `log`,
-`tan`, `asin`/`acos`, `mod`, `sign`, `reflect`, `refract`, `inversesqrt`,
-`fwidth`, plus `mat2`/`mat3`.
+**Stage 3 — close the intrinsic gaps.** *Done.* The whole set, in eacp's
+`ShaderValue.h`: `tan`, `asin`, `acos`, `atan`/`atan2`, `exp`, `exp2`, `log`,
+`log2`, `rsqrt`, `sign`, `ceil`, `round`, `trunc`, `mod`, `distance`, `reflect`,
+`refract`, `faceforward`, `dfdx`, `dfdy`, `fwidth` — plus every swizzle and
+`mat2`/`mat3`.
+
+Three of those turned out not to be mechanical at all, which is the return on
+measuring rather than guessing — see below.
 
 **Stage 4 — texture channels.** `iChannel0..3`, `texelFetch`, `textureLod`.
 
@@ -175,57 +180,87 @@ build/Tools/Transpile/shadertoy-transpile --report Corpus/*.glsl \
 
 ## The coverage table
 
-Over the six shaders in `Corpus/` plus `Apps/PlasmaPort/Plasma.glsl`, as of the
-end of stage 2. `Shaders` is the number blocked by that gap, which is what the
-roadmap is sorted by:
+Over the seven shaders in `Corpus/` plus `Apps/PlasmaPort/Plasma.glsl`, as of
+the end of stage 3. `Shaders` is the number blocked by that gap, which is what
+the roadmap is sorted by:
 
 | Blocker | Shaders | Occurrences |
 | --- | ---: | ---: |
 | control-flow: break | 1 | 1 |
-| control-flow: for | 1 | 1 |
 | control-flow: if | 1 | 1 |
-| intrinsic: atan | 1 | 1 |
-| intrinsic: exp | 1 | 1 |
-| intrinsic: mod | 1 | 1 |
-| swizzle: .yx | 1 | 1 |
+| control-flow: for | 1 | 1 |
 | texture: texture | 1 | 1 |
 | user-function: march | 1 | 1 |
 
-4 of 7 shaders converted with no gaps.
+6 of 8 shaders converted with no gaps.
 
-`Fbm.glsl` and `Voronoi.glsl` were added with stage 2 and convert on it: four
-octaves of value noise over two helpers, and nine feature points over two nested
-loops and an `inout` helper. Neither asks eacp for anything it does not have —
-that is the point of unrolling and inlining being worth a stage of their own.
+Every intrinsic and swizzle row is gone, and what is left is two shaders and two
+stages: `Tunnel.glsl` wants a texture channel (stage 4), and `Raymarch.glsl`
+wants real control flow (stage 5) — the `user-function: march` row is that same
+`break` seen from outside, a helper the port had to leave as a call because the
+loop in it cannot be unrolled.
 
-Two gaps that stage 1 reported are gone, and the difference between them is the
-whole reason for measuring rather than guessing. `user-function: sdSphere` was
-never a gap at all: the helper inlines, and stage 1 only reported it because it
-could not look inside one. `user-function: march` is still there, and now means
-something narrower — a helper the port had to leave as a call, because the loop
-in it has a data-dependent `break`. The `for`, `break` and `if` rows underneath
-it say why, which is what stops the table promising that inlining alone would
-have turned `Raymarch.glsl` green.
+`Kaleido.glsl` was added with stage 3 and is the shader that measures it: a
+`mat2` rotation built inline, polar coordinates through the two-argument `atan`,
+`mod` tiling, `exp` falloff, `inversesqrt` and `sign` in the shaping, and
+swizzles of every width up to `.wzyx`. It converts with nothing left over, which
+is a claim only worth making because `Tests/Runtime` then compiles it.
 
 The corpus is still far too small for these counts to rank anything. What it
-establishes is that the measurement works end to end.
+establishes is that the measurement works end to end — and stage 3 is the first
+time it paid for itself, by turning three assumptions into bugs before they
+shipped.
 
 ## What this has already changed in eacp
 
-The point of the exercise, so it is worth recording the first one.
+The point of the exercise, so it is worth recording what it has found.
 
-Every shader that sums an offset into a coordinate — `uv + iTime`, `p - speed` —
-failed to compile once loops unrolled, and not for any reason the transpiler
-could see: it emitted exactly what the source said. eacp broadcast a scalar
-*handle* across a vector for `*` and `/` but not for `+` or `-`, and had no
-`scalar / vector` at all, so `uv * iTime` compiled and `uv + iTime` did not.
-Both shading languages the EDSL emits into broadcast all four.
+**Scalar broadcast for `+` and `-`** (stage 2). Every shader that sums an offset
+into a coordinate — `uv + iTime`, `p - speed` — failed to compile once loops
+unrolled, and not for any reason the transpiler could see: it emitted exactly
+what the source said. eacp broadcast a scalar *handle* across a vector for `*`
+and `/` but not for `+` or `-`, and had no `scalar / vector` at all, so
+`uv * iTime` compiled and `uv + iTime` did not. Both shading languages the EDSL
+emits into broadcast all four.
 
 Closed in `ShaderValue.h`, with a codegen test that pins the operand order for
 the two that do not commute. It was found by `Corpus/Fbm.glsl` failing to build
 in `Tests/Runtime`, which is why the corpus ports are compiled there rather than
 only transpiled: a header the transpiler reports no gaps in can still be one the
 EDSL will not take, and the only thing that catches that is a compiler.
+
+**`mod` is not `fmod`** (stage 3). The obvious way to add GLSL's `mod` is a call
+node named `fmod`, which is what both backends offer. It is also wrong: `fmod`
+truncates, `mod` floors, and they disagree on exactly the inputs a shader cares
+about — `mod(-0.25, 1.0)` is `0.75` in GLSL and `-0.25` in MSL, so every tile
+left of the origin in a tiling shader comes out mirrored. eacp records it as
+`x - y * floor(x / y)` instead, built from nodes both languages already agree
+on, which makes the two backends bit-identical rather than merely both plausible.
+
+**A swizzle has to be one node** (stage 3). `.yx` and `.zw` had no accessor, and
+the cheap fix is for the transpiler to rebuild them as constructors —
+`float4(v.z(), v.y(), v.x(), v.w())` for `.zyxw`. That is correct and it is
+also a trap: it records the subtree behind `v` four times, and eacp's emitter
+dedups by node identity rather than by structure, so the *shader* evaluates it
+four times too. `Corpus/Kaleido.glsl` made this visible as a 204-column line in
+the generated port. eacp now has all 340 orderings of one to four components,
+generated by macro and constrained to the widths that can spell them, so a
+swizzle stays one `Swizzle` node however it is written.
+
+**`mat2` and `mat3` cannot cross from the CPU** (stage 3). They were added as
+shader-local values — the inline rotation, the tangent basis — and deliberately
+refused as uniforms: MSL packs a `float2x2` as two `float2` columns, 16 bytes,
+while an HLSL cbuffer gives every matrix row a register of its own and takes 32.
+That is a disagreement *inside* the value, which the uniform block's pad scalars
+cannot correct. `float4x4`, which both languages agree on, stays the matrix to
+send. `ShaderBuilder::uniform<T>()` static_asserts this rather than leaving it
+to a comment.
+
+Stage 3 also found a bug on this side of the fence rather than in eacp: the
+emitter's line-wrapping path rebuilt a call's head from the *GLSL* name, so a
+wrapped `inversesqrt` came back as `inversesqrt` instead of `rsqrt`. It had
+never mattered while every supported builtin was spelled the same in both
+languages. `Glsl/wrappedCallsKeepEdslName` pins it.
 
 ## The gap ledger
 
@@ -235,13 +270,17 @@ list the table above is gradually replacing with measured counts.
 | Blocker | Where it lives in eacp |
 | --- | --- |
 | No comparisons, `select`, `if` or loops; no mutable `Var` | `ShaderGraph.h` — `ExprKind` holds expressions only |
-| No `int`/`bool`/`ivec`, no `mat2`/`mat3`, no arrays or structs | `ShaderTypes.h` |
-| Missing intrinsics: `atan`, `exp`, `log`, `tan`, `asin`, `mod`, `sign`, `reflect`, `refract`, `fwidth` | `ShaderValue.h` |
+| No `int`/`bool`/`ivec`, no arrays or structs | `ShaderTypes.h` |
+| No `transpose`, `inverse` or `determinant` — a matrix can be built and multiplied, and that is where `Float2x2`/`Float3x3` stop | `ShaderValue.h` |
+| `Float2x2`/`Float3x3` cannot be uniforms: MSL and HLSL pack them to different sizes, which no padding between fields can bridge. `Float4x4` is unaffected | `UniformLayout.h` |
 | A vector built only from literals is rejected — `ComponentsFor` needs one handle to take a graph from, so `vec3(0.0)` has no direct spelling. A scalar has the same problem: `float d = 2.0` is a C++ float rather than a value, and ports anchor both with `constant()` | `ShaderValue.h` |
-| Swizzles stop at `x/y/z/w`, `xy` and `xyz`; `.zw` and `.yx` have no accessor, though `ValueHandle::swizzle` underneath is fully general | `ShaderValue.h` |
 | No app-facing render-to-texture (`OffscreenTarget` is snapshot-only) | `Frame.h` |
 | Texture formats are 8-bit only; no float/half, no mips | `Texture.h` |
-| `sample()` is fragment-stage only | `ShaderValue.h` |
+| `sample()` is fragment-stage only, as are `dfdx`/`dfdy`/`fwidth` | `ShaderValue.h` |
+
+Closed by stage 3: the intrinsic row (all twenty-one of them), the swizzle row
+(`.zw` and `.yx` were the measured cases; all 340 orderings are there now), and
+`mat2`/`mat3` as expression types.
 
 ## Validation
 
@@ -258,9 +297,15 @@ missing scalar broadcast above.
 **Reference images.** *Ahead.* Render at a fixed `iTime` into an off-screen
 target and diff against a golden PNG within a tolerance; eacp already has the
 read-back path this rides on (`GPUSnapshotTests`). This is the layer that catches
-a port that compiles but is subtly wrong — GLSL `mod` versus MSL `fmod` on
-negative operands, integer division, `pow` with a negative base, and column-major
-versus row-major matrix construction across the two backends.
+a port that compiles but is subtly wrong — integer division, `pow` with a
+negative base, `round` on an exact half, and whether a `mat2` really came out
+column-major on both backends.
+
+Two of the traps this layer was meant to catch are closed by construction
+instead, which is the better place for them: `mod` is recorded as its floored
+form rather than as a call either backend would truncate, and a matrix
+construction is transposed on HLSL so both backends read the same columns. Both
+are pinned by codegen tests in eacp rather than by an image.
 
 ## Building
 
