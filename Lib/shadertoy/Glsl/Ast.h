@@ -22,6 +22,8 @@ enum class StatementKind
     Assign, // name op= value
     Return, // value, or -1 for a bare `return;`
     For, // init / condition / step / body
+    While, // condition / body
+    If, // condition / body / elseBody
     Break,
     Continue,
     Call, // a call standing alone as a statement, so value is discarded
@@ -50,10 +52,19 @@ struct Statement
 
     // `for (init; condition; step) body`. The three clauses are blocks rather
     // than single statements so that a comma-separated one stays intact.
+    // A while uses condition and body; an if uses condition, body and elseBody.
     int init = -1;
     int condition = -1;
     int step = -1;
     int body = -1;
+    int elseBody = -1;
+
+    // Whether the port has to declare this local as a mutable variable rather
+    // than binding it once. Set after lowering, by the pass that finds the
+    // names a loop or a branch writes from outside its own scope: those are the
+    // ones a C++ handle cannot stand in for, since rebinding it inside a lambda
+    // would leave the value behind at the closing brace.
+    bool isVariable = false;
 };
 
 // A brace-delimited run of statements, held in its own arena so that a nested

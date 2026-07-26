@@ -16,6 +16,7 @@ namespace
 enum class Type
 {
     Unknown,
+    Bool, // what a comparison yields and a branch or a select tests
     Float,
     Vec2,
     Vec3,
@@ -38,6 +39,7 @@ int componentsOf(Type type)
             return 3;
         case Type::Vec4:
             return 4;
+        case Type::Bool:
         case Type::Mat2:
         case Type::Mat3:
         case Type::Mat4:
@@ -85,6 +87,8 @@ Type typeOfWidth(int components)
 
 Type typeFromGlslName(std::string_view name)
 {
+    if (name == "bool")
+        return Type::Bool;
     if (name == "float")
         return Type::Float;
     if (name == "vec2")
@@ -263,22 +267,45 @@ char canonicalComponent(char component)
     }
 }
 
-// C++ and GLSL agree on the precedence of the four arithmetic operators, so an
+// C++ and GLSL agree on the precedence of every operator the port emits, so an
 // expression that needed no parentheses in the source needs none in the port.
 // Emitting them anyway is what turned a readable sum into a thicket.
 // eacp's own column limit, so a generated header sits in the project without
 // clang-format wanting to reflow it.
 constexpr auto columnLimit = 85;
 
+// Zero for anything the port has no operator for - the bitwise set, which needs
+// the integer type rather than an operator - so emitBinary reports those
+// instead of spelling them.
 int precedenceOf(const std::string& op)
 {
     if (op == "*" || op == "/" || op == "%")
-        return 2;
+        return 6;
 
     if (op == "+" || op == "-")
+        return 5;
+
+    if (op == "<" || op == ">" || op == "<=" || op == ">=")
+        return 4;
+
+    if (op == "==" || op == "!=")
+        return 3;
+
+    if (op == "&&")
+        return 2;
+
+    if (op == "||")
         return 1;
 
     return 0;
+}
+
+// Whether an operator yields a bool rather than something shaped like its
+// operands.
+bool yieldsBool(const std::string& op)
+{
+    auto precedence = precedenceOf(op);
+    return precedence > 0 && precedence < 5;
 }
 
 std::string floatLiteral(double value)
@@ -398,54 +425,144 @@ private:
     // The out parameter is an ordinary local as far as the port is concerned:
     // C++ locals rebind their handle on assignment, so every write GLSL makes to
     // fragColor is just another `=`, and the last value it holds is returned.
+    // Unless a branch is what writes it, in which case it is a variable and the
+    // read at the end is a read like any other.
     std::string emitResult()
     {
         if (types.count(shader.fragColor) != 0)
-            return "        return " + shader.fragColor + ";\n";
+            return indent + "return " + readOf(shader.fragColor) + ";\n";
 
         if (wroteReturn)
             return {};
 
         report(DiagnosticKind::ParseError, "mainImage never writes fragColor");
-        return "        return float4(constant(0.0f), 0.0f, 0.0f, 1.0f);\n";
+        return indent + "return float4(constant(0.0f), 0.0f, 0.0f, 1.0f);\n";
+    }
+
+    // The name a value is read under. A mutable local is a Var, whose read is a
+    // node of its own recorded where the read appears, so the port spells it
+    // out rather than leaning on the implicit conversion - which keeps the
+    // difference between a bound handle and a place visible in the source.
+    std::string readOf(const std::string& name) const
+    {
+        return variables.count(name) != 0 ? name + "()" : name;
+    }
+
+    std::string emitBlock(int block)
+    {
+        if (block < 0)
+            return {};
+
+        auto saved = indent;
+        indent += "    ";
+
+        auto text = std::string {};
+
+        for (const auto& statement: shader.block(block).statements)
+            text += emitStatement(statement);
+
+        indent = saved;
+        return text;
     }
 
     std::string emitStatement(const Statement& statement)
     {
         currentLine = statement.line;
 
-        if (statement.kind == StatementKind::Return)
+        switch (statement.kind)
         {
-            if (statement.value < 0)
-            {
-                report(DiagnosticKind::ControlFlow, "early return");
-                return {};
-            }
+            case StatementKind::Return:
+                return emitReturn(statement);
 
-            wroteReturn = true;
-            return layout("        return ", statement.value, ";");
+            case StatementKind::Declare:
+                return emitDeclare(statement);
+
+            case StatementKind::While:
+                return emitLoop(statement);
+
+            case StatementKind::If:
+                return emitBranch(statement);
+
+            case StatementKind::Break:
+                return indent + "breakLoop();\n";
+
+            case StatementKind::Continue:
+                return indent + "continueLoop();\n";
+
+            default:
+                return emitAssign(statement);
+        }
+    }
+
+    std::string emitReturn(const Statement& statement)
+    {
+        if (statement.value < 0)
+        {
+            report(DiagnosticKind::ControlFlow, "early return");
+            return {};
         }
 
-        if (statement.kind == StatementKind::Declare)
+        wroteReturn = true;
+        return layout(indent + "return ", statement.value, ";");
+    }
+
+    std::string emitDeclare(const Statement& statement)
+    {
+        auto declared = typeFromGlslName(statement.type);
+
+        if (statement.isVariable)
         {
-            auto declared = typeFromGlslName(statement.type);
-
-            if (statement.value < 0)
-            {
-                // A declaration with no initialiser has nothing to bind an
-                // `auto` to; the assignment that follows becomes the
-                // declaration instead.
-                pending[statement.name] = declared;
-                return {};
-            }
-
             types[statement.name] =
                 declared != Type::Unknown ? declared : typeOf(statement.value);
+            variables.insert(statement.name);
 
-            return layoutValue(
-                "        auto " + statement.name + " = ", statement.value, ";");
+            if (statement.value < 0)
+                return indent + "auto " + statement.name + " = var("
+                       + zeroOf(types[statement.name]) + ");\n";
+
+            return layout(indent + "auto " + statement.name + " = var(",
+                          statement.value,
+                          ");");
         }
 
+        if (statement.value < 0)
+        {
+            // A declaration with no initialiser has nothing to bind an
+            // `auto` to; the assignment that follows becomes the
+            // declaration instead.
+            pending[statement.name] = declared;
+            return {};
+        }
+
+        types[statement.name] =
+            declared != Type::Unknown ? declared : typeOf(statement.value);
+
+        return layoutValue(
+            indent + "auto " + statement.name + " = ", statement.value, ";");
+    }
+
+    // A branch, and a loop, as the statements the EDSL spells them with: the
+    // condition, then the body as a lambda recording into a block of its own.
+    std::string emitBranch(const Statement& statement)
+    {
+        auto text = layout(indent + "ifThen(", statement.condition, ", [&]");
+        text += indent + "{\n" + emitBlock(statement.body) + indent + "}";
+
+        if (statement.elseBody >= 0)
+            text += ",\n" + indent + "[&]\n" + indent + "{\n"
+                    + emitBlock(statement.elseBody) + indent + "}";
+
+        return text + ");\n";
+    }
+
+    std::string emitLoop(const Statement& statement)
+    {
+        auto text = layout(indent + "loop(", statement.condition, ", [&]");
+        return text + indent + "{\n" + emitBlock(statement.body) + indent + "});\n";
+    }
+
+    std::string emitAssign(const Statement& statement)
+    {
         auto found = pending.find(statement.name);
 
         if (found != pending.end())
@@ -456,7 +573,7 @@ private:
             pending.erase(found);
 
             return layoutValue(
-                "        auto " + statement.name + " = ", statement.value, ";");
+                indent + "auto " + statement.name + " = ", statement.value, ";");
         }
 
         if (types.count(statement.name) == 0)
@@ -468,7 +585,7 @@ private:
                                         : typeOf(statement.value);
 
             return layoutValue(
-                "        auto " + statement.name + " = ", statement.value, ";");
+                indent + "auto " + statement.name + " = ", statement.value, ";");
         }
 
         // `col += x` becomes `col = col + x`, with the right-hand side
@@ -476,7 +593,8 @@ private:
         // rebind it: `col -= a + b` must not become `col = col - a + b`.
         if (!statement.op.empty())
         {
-            auto head = "        " + statement.name + " = " + statement.name;
+            auto read = readOf(statement.name);
+            auto head = indent + statement.name + " = " + read;
             auto single =
                 head + " " + statement.op + " "
                 + emitOperand(statement.value, precedenceOf(statement.op), true)
@@ -485,19 +603,42 @@ private:
             if ((int) single.size() <= columnLimit)
                 return single + "\n";
 
-            auto start = 12 + (int) statement.op.size() + 1;
+            auto start = (int) indent.size() + 4 + (int) statement.op.size() + 1;
 
-            return head + "\n            " + statement.op + " "
+            return head + "\n" + indent + "    " + statement.op + " "
                    + layoutOperand(statement.value,
                                    start,
-                                   "                ",
+                                   indent + "        ",
                                    precedenceOf(statement.op),
                                    true)
                    + ";\n";
         }
 
-        return layoutValue(
-            "        " + statement.name + " = ", statement.value, ";");
+        return layoutValue(indent + statement.name + " = ", statement.value, ";");
+    }
+
+    // The value a variable declared without one starts at, which GLSL leaves
+    // undefined and the port has to spell.
+    std::string zeroOf(Type type)
+    {
+        switch (type)
+        {
+            case Type::Bool:
+                return "false";
+            case Type::Float:
+                return "0.0f";
+            case Type::Vec2:
+                return "float2(constant(0.0f), 0.0f)";
+            case Type::Vec3:
+                return "float3(constant(0.0f), 0.0f, 0.0f)";
+            case Type::Vec4:
+                return "float4(constant(0.0f), 0.0f, 0.0f, 0.0f)";
+            default:
+                break;
+        }
+
+        report(DiagnosticKind::UnsupportedType, "uninitialised variable");
+        return "0.0f";
     }
 
     // --- layout ----------------------------------------------------------
@@ -520,7 +661,7 @@ private:
     {
         auto column = (int) prefix.size();
         auto body =
-            layoutExpression(node, column, (int) suffix.size(), "            ");
+            layoutExpression(node, column, (int) suffix.size(), indent + "    ");
         return prefix + body + suffix + "\n";
     }
 
@@ -558,6 +699,12 @@ private:
             if (!callee.empty())
                 return layoutCall(callee, expr, column, trailing, indent);
         }
+
+        // A ternary emits as select(condition, whenTrue, whenFalse) over the
+        // three nodes it was parsed with, which is exactly the shape the call
+        // layout re-walks.
+        if (expr.kind == ExprKind::Ternary)
+            return layoutCall("select", expr, column, trailing, indent);
 
         return single;
     }
@@ -738,15 +885,21 @@ private:
 
             case ExprKind::Identifier:
             {
+                if (expr.text == "true" || expr.text == "false")
+                    return Type::Bool;
+
                 auto found = types.find(expr.text);
                 return found != types.end() ? found->second : Type::Unknown;
             }
 
             case ExprKind::Unary:
-                return typeOf(expr.args[0]);
+                return expr.text == "!" ? Type::Bool : typeOf(expr.args[0]);
 
             case ExprKind::Binary:
             {
+                if (yieldsBool(expr.text))
+                    return Type::Bool;
+
                 // A vector next to a scalar broadcasts, so the wider operand
                 // wins - which is also what the EDSL's operators do.
                 auto left = typeOf(expr.args[0]);
@@ -896,9 +1049,11 @@ private:
                 return emitMember(expr);
 
             case ExprKind::Ternary:
-                report(DiagnosticKind::ControlFlow, "?:");
-                return "/* unsupported: ?: */ (" + emitExpression(expr.args[1])
-                       + ")";
+                // Both sides are values the port has already computed, so the
+                // ternary picks between them rather than skipping one - which
+                // is what select() is, and what the shading languages emit for
+                // the conditional operator too.
+                return "select(" + emitArguments(expr) + ")";
 
             case ExprKind::Index:
                 return emitIndex(expr);
@@ -920,8 +1075,13 @@ private:
             return expr.text;
         }
 
+        // A boolean literal has no graph of its own to record into, the way a
+        // float literal has none - boolean() is what anchors it.
+        if (expr.text == "true" || expr.text == "false")
+            return "boolean(" + expr.text + ")";
+
         if (types.count(expr.text) != 0 || pending.count(expr.text) != 0)
-            return expr.text;
+            return readOf(expr.text);
 
         report(DiagnosticKind::UnknownIdentifier, expr.text);
         return "/* unresolved: " + expr.text + " */ " + expr.text;
@@ -969,7 +1129,12 @@ private:
         if (expr.text == "+")
             return operand;
 
-        report(DiagnosticKind::ControlFlow, expr.text);
+        if (expr.text == "!")
+            return "!(" + operand + ")";
+
+        // What is left is `~`, the bitwise complement, which needs the integer
+        // type rather than an operator.
+        report(DiagnosticKind::UnsupportedType, "int " + expr.text);
         return "/* unsupported: " + expr.text + " */ (" + operand + ")";
     }
 
@@ -994,13 +1159,10 @@ private:
             return left + " " + expr.text + " " + right;
         }
 
-        // GLSL defines % on integers only, so what a shader reaching it needs
-        // is the integer type, not a modulus - mod() is spelled for floats.
-        if (expr.text == "%")
-            report(DiagnosticKind::UnsupportedType, "int %");
-        else
-            report(DiagnosticKind::ControlFlow, expr.text);
-
+        // GLSL defines % and the bitwise operators on integers only, so what a
+        // shader reaching one needs is the integer type, not the operator -
+        // mod() is spelled for floats.
+        report(DiagnosticKind::UnsupportedType, "int " + expr.text);
         return "/* unsupported: " + expr.text + " */ (" + left + ")";
     }
 
@@ -1324,8 +1486,15 @@ private:
 
     std::map<std::string, Type> types;
     std::map<std::string, Type> pending;
+    std::set<std::string> variables; // the locals declared with var()
     std::set<int> channelsUsed;
     Vector<Diagnostic> diagnostics;
+
+    // Where the statement being emitted sits. A body nested in a loop or a
+    // branch is one level further in, and the wrapping layout measures its
+    // columns from here.
+    std::string indent = "        ";
+
     int currentLine = 0;
     bool wroteReturn = false;
 };

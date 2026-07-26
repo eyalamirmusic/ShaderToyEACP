@@ -18,11 +18,12 @@ bool isTypeName(std::string_view text)
            || text == "samplerCube";
 }
 
-// The keywords that open a construct with a body. `for` is parsed properly now
-// that it can be unrolled; the rest are still skipped and reported.
+// The keywords that open a construct with a body and are still skipped and
+// reported. `for`, `while` and `if` are parsed properly now that the EDSL has
+// statements to lower them into; `do` and `switch` have no counterpart there.
 bool isControlFlowKeyword(std::string_view text)
 {
-    return text == "if" || text == "while" || text == "do" || text == "switch";
+    return text == "do" || text == "switch";
 }
 
 // The assignment operators, with the arithmetic ones carrying the operator the
@@ -345,6 +346,9 @@ private:
         skipToSemicolon();
     }
 
+    // The two constructs with a body that are still skipped: a `do`, whose test
+    // is at the bottom and so trails the body, and a `switch`, whose body is one
+    // block either way.
     void skipControlFlow()
     {
         auto keyword = advance().text;
@@ -354,27 +358,13 @@ private:
 
         skipStatement();
 
-        if (keyword == "do")
-        {
-            if (match("while"))
-                skipBalanced("(", ")");
-
-            match(";");
+        if (keyword != "do")
             return;
-        }
 
-        while (match("else"))
-        {
-            if (check("if"))
-            {
-                advance();
+        if (match("while"))
+            skipBalanced("(", ")");
 
-                if (check("("))
-                    skipBalanced("(", ")");
-            }
-
-            skipStatement();
-        }
+        match(";");
     }
 
     // --- statements ------------------------------------------------------
@@ -390,8 +380,7 @@ private:
 
         auto type = advance().text;
 
-        if (type == "bool" || type.rfind("ivec", 0) == 0
-            || type.rfind("bvec", 0) == 0)
+        if (type.rfind("ivec", 0) == 0 || type.rfind("bvec", 0) == 0)
             report(DiagnosticKind::UnsupportedType, type);
 
         do
@@ -581,6 +570,51 @@ private:
         into.add(std::move(statement));
     }
 
+    void parseWhile(Vector<Statement>& into)
+    {
+        auto statement = Statement {StatementKind::While};
+        statement.line = peek().line;
+
+        advance(); // 'while'
+        expect("(");
+        statement.condition = parseExpression();
+        expect(")");
+
+        statement.body = parseBody();
+        into.add(std::move(statement));
+    }
+
+    // `if (condition) body else body`. An `else if` is the else body holding one
+    // if of its own, which is what the source means and what the port emits.
+    void parseIf(Vector<Statement>& into)
+    {
+        auto statement = Statement {StatementKind::If};
+        statement.line = peek().line;
+
+        advance(); // 'if'
+        expect("(");
+        statement.condition = parseExpression();
+        expect(")");
+
+        statement.body = parseBody();
+
+        if (match("else"))
+        {
+            if (check("if"))
+            {
+                auto otherwise = Block {};
+                parseIf(otherwise.statements);
+                statement.elseBody = shader.add(std::move(otherwise));
+            }
+            else
+            {
+                statement.elseBody = parseBody();
+            }
+        }
+
+        into.add(std::move(statement));
+    }
+
     // A brace-delimited block, or the single statement a loop header is allowed
     // to stand in for.
     int parseBody()
@@ -626,6 +660,18 @@ private:
         if (check("for"))
         {
             parseFor(into);
+            return;
+        }
+
+        if (check("while"))
+        {
+            parseWhile(into);
+            return;
+        }
+
+        if (check("if"))
+        {
+            parseIf(into);
             return;
         }
 

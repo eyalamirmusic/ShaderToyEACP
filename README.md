@@ -11,11 +11,13 @@ a matter of opinion into a measurement. Every shader that fails to convert names
 a specific gap, and the number of shaders blocked on each gap is what decides
 which one to close next.
 
-> **⚠️ Early days.** Stages 0 to 4 are done: straight-line GLSL converts,
+> **⚠️ Early days.** Stages 0 to 5 are done: straight-line GLSL converts,
 > constant-trip-count loops unroll, helper functions inline, the intrinsic and
-> swizzle gaps are closed, texture channels are sampled, and the generated C++
-> compiles and runs. Branches and data-dependent loops are still ahead — see the
-> plan and the coverage table below.
+> swizzle gaps are closed, texture channels are sampled, and the EDSL now has
+> real control flow — mutable locals, `if`/`else`, `while`, `break`, `continue`
+> and `select` — so a raymarcher with a data-dependent break converts, compiles
+> and renders. Multi-buffer Shadertoys are still ahead — see the plan and the
+> coverage table below.
 
 ## Why this works better than it looks like it should
 
@@ -35,19 +37,25 @@ inline wherever it is called, so the transpiler can substitute the body at the
 source level and a port holds no functions of its own however many the shader
 was written with.
 
-**Constant-trip-count loops are unrolled by the transpiler**, so a large slice of
-the corpus is reachable before the EDSL grows control flow at all.
-`for (int i = 0; i < 8; i++)` becomes eight recorded copies of the body. This
-does not blow up the emitted source: eacp's emitter already promotes any node
-used more than once to a named local, so an unrolled 64-step march emits linear
-MSL/HLSL rather than a nested expression. fbm, value noise, fixed-iteration
-Mandelbrot and fixed-step raymarchers all land inside this.
+**Constant-trip-count loops are unrolled by the transpiler**, which reached a
+large slice of the corpus before the EDSL had control flow at all and is still
+what a countable loop gets: `for (int i = 0; i < 8; i++)` becomes eight recorded
+copies of the body, with the counter substituted as a literal and folded through
+whatever it touches. This does not blow up the emitted source — eacp's emitter
+promotes any node used more than once to a named local, so an unrolled 64-step
+march emits linear MSL/HLSL rather than a nested expression.
+
+A loop whose length the transpiler cannot work out — a moving bound, or a body
+that breaks on what it finds — is the one that needs statements, and gets them.
+Which of the two a loop takes is decided by reading its header and its body, not
+by asking the author.
 
 ## What is here now
 
 ```
 Lib/shadertoy/Glsl/       lexer, parser, AST, diagnostics  (no GPU dependency)
-                          Lower (unrolling, inlining, constant folding)
+                          Lower (unrolling, inlining, constant folding,
+                          statements, and which locals become variables)
 Lib/shadertoy/Emit/       the AST -> C++ EDSL emitter
 Lib/shadertoy/Runtime/    Program (the Shadertoy uniform set + fullscreen pass)
                           Channel (a texture and the size published beside it)
@@ -57,10 +65,11 @@ Corpus/                   shaders the coverage report is measured against
 Apps/Plasma/              a hand port, for comparison
 Apps/PlasmaPort/          the same shader, converted from GLSL at build time
 Apps/TunnelPort/          a converted port that reads a texture channel
+Apps/MarchPort/           a converted port that marches a loop with a break
 Tests/Glsl/               lowering and diagnostics
 Tests/Runtime/            vertex layout, uniform block layout, generated stages,
                           corpus ports compiled from their GLSL by the build, and
-                          rendered read-back of a bound channel
+                          rendered read-back of a bound channel and of a loop
 ```
 
 A port looks like this — hand-written or generated, the shape is the same:
@@ -111,6 +120,29 @@ struct TunnelShader final : Shadertoy::Program
 size as `iChannelResolution` in the same move, so a shader fetching texels
 cannot be reading one image while scaling by the dimensions of another.
 
+A port that loops declares what the loop writes as a variable — the one handle
+in the EDSL that names a place rather than a value, so the body can leave
+something behind for the code after it:
+
+```cpp
+auto travelled = var(0.0f);
+auto steps = var(0.0f);
+
+loop(steps() < 64.0f, [&]
+{
+    auto distance = length(origin + direction * travelled()) - 1.0f;
+
+    ifThen(distance < 0.001f, [&] { breakLoop(); });
+
+    travelled = travelled() + distance;
+    steps = steps() + 1.0f;
+});
+```
+
+`travelled()` is the read, spelled out rather than left to the implicit
+conversion, so the difference between a bound handle and a place stays visible
+in the source — which is also how the transpiler emits it.
+
 ## The plan
 
 Each stage is independently useful, and each one ends by producing a coverage
@@ -139,8 +171,10 @@ rather than the first.
 
 **Stage 2 — unrolling and inlining.** *Done.* A `for` whose trip count the
 transpiler can work out becomes that many copies of its body, with the counter
-substituted as a literal — which is also what keeps `int` off the gap list,
-since after unrolling there is no integer left to express. A call to a helper
+substituted as a literal — which is what keeps the ordinary loop counter off the
+gap list, since after unrolling there is no integer left to express. (One that
+survives, in a loop stage 5 keeps, becomes a float instead — the same reasoning
+`iFrame` is one.) A call to a helper
 becomes the helper's body, arguments and all, including helpers that call
 helpers and helpers that write back through an `inout` parameter. Flattening
 puts every local in one C++ scope, so a name declared inside a body is renamed
@@ -180,13 +214,39 @@ stage that started the rendered read-back layer — `Tests/Runtime/ChannelTests`
 draws a two-texel texture through a port and checks which half of the frame each
 texel landed in.
 
-**Stage 5 — real control flow.** `Var`, `Select`, `If`, `While` in eacp's shader
-IR, driven by the shaders unrolling cannot reach: `break`-on-hit raymarchers,
-dynamic bounds, `while`. This is the stage that turns the EDSL from an
-expression tree into a language, and it is the largest single payoff to eacp.
+**Stage 5 — real control flow.** *Done.* `Var`, `Bool`, `select`, `ifThen`,
+`loop`, `breakLoop` and `continueLoop` in eacp's shader IR, driven by the
+shaders unrolling cannot reach: `break`-on-hit raymarchers, dynamic bounds,
+`while`. This is the stage that turns the EDSL from an expression tree into a
+language, and it is the largest single payoff to eacp.
 
-**Stage 6 — multi-buffer Shadertoys.** Buffer A–D with feedback, which needs
-render-to-texture and float texture formats in eacp.
+`ShaderGraph` now holds a statement list beside its expression store —
+`Declare`, `Assign`, `If`, `Loop`, `Break`, `Continue`, in blocks — because the
+one thing an expression tree cannot say is that something happens *before*
+something else. A `Var` is the only handle whose value is not fixed when it is
+built: reading one records a node at the point of the read, so what it evaluates
+to is whatever the statements before it left there.
+
+That is also what the emitter had to learn. It already named any subtree
+evaluated more than once, and with control flow that sharing needs two bounds:
+a name is given up the moment a statement writes a variable the value behind it
+read, and a loop condition takes no name at all — it is printed into the `while`
+header, so binding it beforehand would test a value that never changes again.
+Both are pinned by codegen tests; the second one is the difference between a
+raymarcher and a hang.
+
+On the transpiler side, a `for` the trip count cannot be worked out becomes the
+loop the port runs — init above it, step at the end of the body, which is where
+a `continue` has to take the step with it. Which locals become variables is
+decided after lowering: any name a loop or a branch writes and did not itself
+declare, because a C++ handle rebound inside a lambda is a new handle that dies
+at the closing brace. Everything else stays a plain binding, so an unrolled
+shader reads exactly as it did.
+
+**Stage 6 — multi-buffer Shadertoys.** *Next.* Buffer A–D with feedback, which
+needs render-to-texture and float texture formats in eacp. The integer type the
+corpus is now asking for — an array index, and the operators only integers have
+— is the other thing the table is pointing at.
 
 ## Using it
 
@@ -215,7 +275,9 @@ Shadertoy::Ports::Plasma shader;   // ready to hand to a ShaderView
 A port that reads a channel needs one thing more from the app: the image. That
 is what `Apps/TunnelPort` is — the same build step over `Corpus/Tunnel.glsl`,
 plus a texture generated at startup and assigned to the channel the generated
-struct declared.
+struct declared. `Apps/MarchPort` needs nothing extra at all, and is the same
+build step over `Corpus/Raymarch.glsl` — the shader there was no port of before
+the EDSL had statements.
 
 Measure the corpus — this is the exact command the table below comes from:
 
@@ -226,23 +288,30 @@ build/Tools/Transpile/shadertoy-transpile --report Corpus/*.glsl \
 
 ## The coverage table
 
-Over the eight shaders in `Corpus/` plus `Apps/PlasmaPort/Plasma.glsl`, as of
-the end of stage 4. `Shaders` is the number blocked by that gap, which is what
-the roadmap is sorted by:
+Over the ten shaders in `Corpus/` plus `Apps/PlasmaPort/Plasma.glsl`, as of the
+end of stage 5. `Shaders` is the number blocked by that gap, which is what the
+roadmap is sorted by:
 
 | Blocker | Shaders | Occurrences |
 | --- | ---: | ---: |
-| control-flow: break | 1 | 1 |
-| control-flow: if | 1 | 1 |
-| control-flow: for | 1 | 1 |
-| user-function: march | 1 | 1 |
+| type: array | 1 | 1 |
+| type: indexing | 1 | 1 |
+| type: int | 1 | 1 |
+| type: int & | 1 | 1 |
+| unknown-identifier: palette | 1 | 1 |
 
-8 of 9 shaders converted with no gaps.
+10 of 11 shaders converted with no gaps.
 
-Every intrinsic, swizzle and texture row is gone, and what is left is one shader
-and one stage: `Raymarch.glsl` wants real control flow (stage 5). The
-`user-function: march` row is that same `break` seen from outside, a helper the
-port had to leave as a call because the loop in it cannot be unrolled.
+Every control-flow row is gone. `Raymarch.glsl` had four of them — three walls
+and the helper that hid behind them, since a loop that cannot be unrolled is a
+function that cannot be inlined — and now converts with nothing left over, as
+does the escape-time loop added beside it.
+
+What is left is one shader and one wall: `Palette.glsl` wants an array, the
+integer that indexes it, and the mask that keeps the index in range. Five rows
+from one shader, which is what a gap looks like when it is genuinely several
+things — an array type, a subscript, an integer value, and an operator only
+integers have.
 
 `Kaleido.glsl` was added with stage 3 and is the shader that measures it: a
 `mat2` rotation built inline, polar coordinates through the two-argument `atan`,
@@ -251,14 +320,20 @@ swizzles of every width up to `.wzyx`.
 
 `Channels.glsl` is stage 4's, and does the same for the three channel reads at
 once: `texture` through the sampler, `textureLod` at a level it names itself,
-and `texelFetch` at coordinates scaled by `iChannelResolution`. Both convert
-with nothing left over, which is a claim only worth making because
-`Tests/Runtime` then compiles them — and, now, renders one.
+and `texelFetch` at coordinates scaled by `iChannelResolution`.
+
+`Raymarch.glsl` and `Mandelbrot.glsl` are stage 5's. The march is the loop whose
+length is what it hits; the escape-time loop is everything else statements buy —
+a `while` with a moving count, a `bool` the loop sets and the shading reads, a
+colour written by both sides of an `if`/`else` and read after it, and a ternary
+over two comparisons joined by a connective. All of them convert with nothing
+left over, which is a claim only worth making because `Tests/Runtime` then
+compiles them — and renders three.
 
 The corpus is still far too small for these counts to rank anything. What it
 establishes is that the measurement works end to end — and it has now paid for
-itself twice, turning three assumptions into bugs in stage 3 and three more in
-stage 4 before any of them shipped.
+itself three times, turning three assumptions into bugs in stage 3, three more
+in stage 4, and two in stage 5 before any of them shipped.
 
 ## What this has already changed in eacp
 
@@ -330,11 +405,48 @@ hits. Every other case anchors it with `constant()`, which only a program has.
 Here the *texture* already carries the graph, so eacp takes the literal directly
 and the port spells it the way the GLSL did.
 
+**A stage's uniform block was decided by walking the wrong roots** (stage 5).
+Both emitters declare the uniform block on a stage only when that stage reads
+one, worked out by walking out from the fragment colour. Statements are a second
+set of roots that walk never reached, so a shader whose loop body was the only
+thing reading a uniform emitted `uniforms.u0` inside a function that had no
+`uniforms` parameter — valid-looking source the platform compiler rejects. The
+walk now covers every expression the statements evaluate, nested bodies
+included. Found by `GPU/codegenControlFlowCompiles`, which is there precisely
+because emitted text that reads correctly is not the same as text a shading
+language will take.
+
+**A loop condition cannot be one of the emitter's shared locals** (stage 5). The
+emitter names any subtree it would otherwise evaluate more than once, which is
+what keeps an unrolled march linear — and applied to a `while` header it is a
+loop that never ends, because the name is bound once above the loop and the
+condition is exactly the thing the body changes. Conditions now print into the
+header, and every name open in the enclosing block is given up at a loop.
+
+The general form of that is the second rule: a name is given up the moment a
+statement writes a variable the value behind it read. Both rules together are
+what let a name still span statements, which is where it matters most — the
+distance a march tests is the distance it steps by, computed once. All three are
+pinned by codegen tests.
+
+**A `Bool` cannot cross from the CPU either** (stage 5). The same disagreement
+as `mat2`/`mat3`, one size down: MSL packs a `bool` into a byte and an HLSL
+cbuffer gives it four. `ShaderBuilder::uniform<T>()` static_asserts it rather
+than leaving it to a comment; a flag from the CPU crosses as a `Float` and gets
+compared.
+
 Stage 3 also found a bug on this side of the fence rather than in eacp: the
 emitter's line-wrapping path rebuilt a call's head from the *GLSL* name, so a
 wrapped `inversesqrt` came back as `inversesqrt` instead of `rsqrt`. It had
 never mattered while every supported builtin was spelled the same in both
 languages. `Glsl/wrappedCallsKeepEdslName` pins it.
+
+Stage 5 found one of its own, and a worse-shaped one: the check for whether a
+loop can be unrolled was asked of the loop about *itself*, but treated its own
+body as a nested one — where a jump belongs to the inner loop and can be
+ignored. So a `for` with a `break` unrolled sixty-four times and dropped the
+break on every copy. It converted, it compiled, and it was wrong. That is the
+failure mode `Tests/Runtime/ControlFlowTests` exists for.
 
 ## The gap ledger
 
@@ -343,8 +455,11 @@ list the table above is gradually replacing with measured counts.
 
 | Blocker | Where it lives in eacp |
 | --- | --- |
-| No comparisons, `select`, `if` or loops; no mutable `Var` | `ShaderGraph.h` — `ExprKind` holds expressions only |
-| No `int`/`bool`/`ivec`, no arrays or structs | `ShaderTypes.h` |
+| No `int`/`ivec`, no arrays or structs | `ShaderTypes.h` |
+| Control flow is fragment-stage (or kernel) only: the statement list is emitted into the fragment function, so a `Var` must not feed the position or a varying — as with `dfdx` and sampling, which are fragment-bound in the language too | `ShaderEmitter.cpp` |
+| No `do`/`while`-at-the-bottom and no `switch`; no early `return` from a shader body, which is one expression returned at the end | `ShaderGraph.h` — `StatementKind` |
+| A `Bool` cannot be a uniform: MSL packs one into a byte and an HLSL cbuffer into four. Send a `Float` and compare it | `UniformLayout.h` |
+| No componentwise comparison: `<` on two vectors yields a bool vector in both languages, and there is no type for one — nor `any()`/`all()` to collapse it | `ShaderValue.h` |
 | No `transpose`, `inverse` or `determinant` — a matrix can be built and multiplied, and that is where `Float2x2`/`Float3x3` stop | `ShaderValue.h` |
 | `Float2x2`/`Float3x3` cannot be uniforms: MSL and HLSL pack them to different sizes, which no padding between fields can bridge. `Float4x4` is unaffected | `UniformLayout.h` |
 | A vector built only from literals is rejected — `ComponentsFor` needs one handle to take a graph from, so `vec3(0.0)` has no direct spelling. A scalar has the same problem: `float d = 2.0` is a C++ float rather than a value, and ports anchor both with `constant()` | `ShaderValue.h` |
@@ -362,6 +477,12 @@ Closed by stage 4: the sampling row — `sample()` at a chosen level and `fetch(
 at texel coordinates, both spelled per backend from one node each. What is left
 of textures is above: no mips, no float formats, and no vertex-stage sample.
 
+Closed by stage 5: the control-flow row. Comparisons, the connectives, `select`,
+mutable `Var`s, `if`/`else`, `while`, `break` and `continue` — and `bool` as an
+expression type, which is what a condition is. What is left of it is above: the
+loop forms neither shading language shares a shape for, the stage restriction,
+and the vector comparison with no type to land in.
+
 ## Validation
 
 Three layers, because they catch different things.
@@ -374,12 +495,20 @@ instantiates the ports, so a header that reports no gaps but that the EDSL will
 not take is a failing build rather than a clean report. This is what found the
 missing scalar broadcast above.
 
-**Rendered pixels.** *Started, in stage 4.* `Tests/Runtime/ChannelTests` renders
-a port off-screen through `View::renderToImage` and reads the frame back. It
-exists because the whole of stage 4 is invisible to the other two layers: a
-channel that never reaches the draw compiles cleanly, reports nothing, and
-renders black. Two texels — red then green — through a sampled channel, a
-fetched one and a transpiled port say which texel each half of the frame got.
+**Rendered pixels.** *Started in stage 4, and load-bearing since stage 5.*
+`Tests/Runtime/ChannelTests` and `Tests/Runtime/ControlFlowTests` render a port
+off-screen through `View::renderToImage` and read the frame back. They exist
+because both stages are invisible to the other two layers: a channel that never
+reaches the draw compiles cleanly, reports nothing and renders black, and a loop
+that never runs, one that ignores its break and one that runs to completion all
+compile, all report nothing, and differ only in their pixels.
+
+So each shader is built so its picture says which happened. Two texels — red
+then green — through a sampled channel, a fetched one and a transpiled port say
+which texel each half of the frame got. A march that steps until it passes the
+pixel's own coordinate comes out a ramp; flat at either end would be a loop
+stuck there. And the generated `Raymarch` port has to be brighter in the middle
+than at the corner, which only a march that stops when it arrives can be.
 
 What is still ahead is the golden-image half of it: render at a fixed `iTime`
 and diff against a stored PNG within a tolerance, which is the layer that
@@ -417,6 +546,7 @@ Outputs:
 - `build/Apps/Plasma/Plasma.app` — the hand port
 - `build/Apps/PlasmaPort/PlasmaPort.app` — the same shader, transpiled
 - `build/Apps/TunnelPort/TunnelPort.app` — a transpiled port reading a channel
+- `build/Apps/MarchPort/MarchPort.app` — a transpiled port marching a loop
 - `build/Tests/Glsl/GlslTests`, `build/Tests/Runtime/RuntimeTests`
 
 ## On licensing the corpus

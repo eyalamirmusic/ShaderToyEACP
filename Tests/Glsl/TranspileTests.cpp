@@ -21,6 +21,17 @@ int countOf(const TranspileResult& result, Glsl::DiagnosticKind kind)
     return count;
 }
 
+int countOccurrences(const std::string& haystack, const std::string& needle)
+{
+    auto count = 0;
+
+    for (auto found = haystack.find(needle); found != std::string::npos;
+         found = haystack.find(needle, found + needle.size()))
+        ++count;
+
+    return count;
+}
+
 bool reports(const TranspileResult& result,
              Glsl::DiagnosticKind kind,
              std::string_view detail)
@@ -187,21 +198,20 @@ auto tParameterNames = test("Glsl/keepsParameterNames") = []
 // everything.
 auto tCollectsEveryGap = test("Glsl/collectsEveryGap") = []
 {
-    auto result = convert("    vec3 col = vec3(0.0);\n"
-                          "    for (float t = 0.0; t < iTime; t += 1.0)\n"
-                          "        col += 0.1;\n"
-                          "    col += determinant(mat2(iTime, 0.0, 0.0, iTime));\n"
-                          "    if (col.x > 1.0) { col = vec3(1.0); }\n"
-                          "    fragColor = vec4(col, 1.0);");
+    auto result =
+        convert("    vec3 col = vec3(0.0);\n"
+                "    for (float t = 0.0; t < iTime; t += 1.0)\n"
+                "        col += determinant(mat2(t, 0.0, 0.0, t));\n"
+                "    if (col.x > 1.0) { col += transpose(mat2(col.x))[0]; }\n"
+                "    fragColor = vec4(col, 1.0);");
 
     check(!result.ok());
-    check(reports(result, Glsl::DiagnosticKind::ControlFlow, "for"));
-    check(reports(result, Glsl::DiagnosticKind::ControlFlow, "if"));
     check(
         reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, "determinant"));
+    check(reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, "transpose"));
 
     // Recovery left the surrounding shader intact.
-    check(contains(result.code, "auto fragColor = float4(col, 1.0f);"));
+    check(contains(result.code, "auto fragColor = float4(col(), 1.0f);"));
 };
 
 // The intrinsics stage 3 closed, and the two places GLSL and the EDSL disagree
@@ -289,17 +299,56 @@ auto tUnrollsConstantLoop = test("Glsl/unrollsConstantLoop") = []
     check(!contains(result.code, "for"));
 };
 
-// A loop the transpiler cannot count is stage 5's, and saying so is the whole
-// value of the row: the body is still walked, so what it needs is counted too.
-auto tDynamicLoopIsReported = test("Glsl/dynamicLoopStillCounted") = []
+// A loop the transpiler cannot count is a loop the port runs: the init above
+// it, the condition tested each time round, and the step as the last thing the
+// body does. What the body needs is counted the same as anywhere else.
+auto tDynamicLoop = test("Glsl/dynamicLoopBecomesALoop") = []
 {
     auto result = convert("    vec3 col = vec3(0.0);\n"
                           "    for (float t = 0.0; t < iTime; t += 1.0)\n"
                           "        col += inverse(mat2(t, 0.0, 0.0, t))[0].x;\n"
                           "    fragColor = vec4(col, 1.0);");
 
-    check(reports(result, Glsl::DiagnosticKind::ControlFlow, "for"));
+    check(countOf(result, Glsl::DiagnosticKind::ControlFlow) == 0);
     check(reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, "inverse"));
+
+    check(contains(result.code, "auto t = var(0.0f);"));
+    check(contains(result.code, "loop(t() < iTime, [&]"));
+    check(contains(result.code, "t = t() + 1.0f;"));
+};
+
+// The counter of a loop the port kept is a float. The EDSL has no integer
+// value, and one stepped by a literal and compared counts exactly far past any
+// trip count a shader has - which is the same reason iFrame is a float.
+auto tIntegerCounter = test("Glsl/integerCounterBecomesAFloat") = []
+{
+    auto result = convert("    float total = 0.0;\n"
+                          "    for (int i = 0; i < int(iTime); i++)\n"
+                          "        total += 1.0;\n"
+                          "    fragColor = vec4(total, 0.0, 0.0, 1.0);");
+
+    check(countOf(result, Glsl::DiagnosticKind::ControlFlow) == 0);
+    check(contains(result.code, "auto i = var(0.0f);"));
+    check(contains(result.code, "i = i() + 1.0f;"));
+
+    // The bound is what is left: converting a float to an integer truncates,
+    // and the EDSL has neither the type nor the intrinsic to say so.
+    check(reports(result, Glsl::DiagnosticKind::UnsupportedType, "int"));
+};
+
+// A while is the loop with nothing to unroll at all, and it lowers to the same
+// statement a for does.
+auto tWhileLoop = test("Glsl/whileConverts") = []
+{
+    auto result = convert("    float d = 0.0;\n"
+                          "    while (d < iTime)\n"
+                          "        d += 0.1;\n"
+                          "    fragColor = vec4(d, 0.0, 0.0, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "auto d = var(0.0f);"));
+    check(contains(result.code, "loop(d() < iTime, [&]"));
+    check(contains(result.code, "d = d() + 0.1f;"));
 };
 
 // Nested loops multiply out, the inner one unrolling once per copy of the
@@ -325,8 +374,9 @@ auto tUnrollsNestedLoops = test("Glsl/unrollsNestedLoops") = []
     check(assignments == 4);
 };
 
-// A jump is what an unrollable loop cannot have, and both it and the loop are
-// named: closing one without the other leaves the shader where it was.
+// A jump is what an unrollable loop cannot have: the copies would each need to
+// know whether an earlier one had already stopped. So a loop holding one stays
+// a loop, however countable its header is.
 auto tLoopWithBreak = test("Glsl/loopWithBreakIsNotUnrolled") = []
 {
     auto result = convert("    float d = 0.0;\n"
@@ -334,12 +384,140 @@ auto tLoopWithBreak = test("Glsl/loopWithBreakIsNotUnrolled") = []
                           "    {\n"
                           "        d += 0.1;\n"
                           "        if (d > 0.5) break;\n"
+                          "        d += 0.2;\n"
                           "    }\n"
                           "    fragColor = vec4(d, 0.0, 0.0, 1.0);");
 
-    check(reports(result, Glsl::DiagnosticKind::ControlFlow, "for"));
-    check(reports(result, Glsl::DiagnosticKind::ControlFlow, "break"));
-    check(reports(result, Glsl::DiagnosticKind::ControlFlow, "if"));
+    check(result.ok());
+    check(contains(result.code, "loop(i() < 8.0f, [&]"));
+    check(contains(result.code, "breakLoop();"));
+
+    // Once, not eight times.
+    check(countOccurrences(result.code, "d = d() + 0.1f;") == 1);
+};
+
+// A continue in a for goes to the step, and the loop the port emits keeps its
+// step at the end of the body - so the jump has to take the step with it or the
+// counter stops moving.
+auto tContinueRunsTheStep = test("Glsl/continueRunsTheStep") = []
+{
+    auto result = convert("    float d = 0.0;\n"
+                          "    for (int i = 0; i < 8; i++)\n"
+                          "    {\n"
+                          "        if (d > 0.5) continue;\n"
+                          "        d += 0.1;\n"
+                          "    }\n"
+                          "    fragColor = vec4(d, 0.0, 0.0, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "continueLoop();"));
+    check(countOccurrences(result.code, "i = i() + 1.0f;") == 2);
+};
+
+// A branch is a statement, and each side records into a body of its own.
+auto tBranches = test("Glsl/branchesConvert") = []
+{
+    auto result = convert("    vec3 col = vec3(0.0);\n"
+                          "    if (fragCoord.x > iTime)\n"
+                          "        col = vec3(1.0, 0.0, 0.0);\n"
+                          "    else\n"
+                          "        col = vec3(0.0, 0.0, 1.0);\n"
+                          "    fragColor = vec4(col, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "ifThen(fragCoord.x() > iTime, [&]"));
+    check(contains(result.code, "col = float3(constant(1.0f), 0.0f, 0.0f);"));
+    check(contains(result.code, "col = float3(constant(0.0f), 0.0f, 1.0f);"));
+    check(contains(result.code, "auto fragColor = float4(col(), 1.0f);"));
+};
+
+// A condition the transpiler can settle is not a branch at all - the shape a
+// `#define`d quality switch has - so only the side that runs is emitted.
+auto tConstantCondition = test("Glsl/constantConditionIsNotABranch") = []
+{
+    auto result = convert("#define QUALITY 2\n"
+                          "    vec3 col = vec3(0.0);\n"
+                          "    if (QUALITY > 1)\n"
+                          "        col = vec3(1.0);\n"
+                          "    else\n"
+                          "        col = vec3(0.5);\n"
+                          "    fragColor = vec4(col, 1.0);");
+
+    check(result.ok());
+    check(!contains(result.code, "ifThen"));
+    check(!contains(result.code, "var("));
+
+    // Only the side that runs: the other one costs the port nothing, not even
+    // a binding it never reads.
+    check(contains(result.code, "col = float3(constant(1.0f), 1.0f, 1.0f);"));
+    check(!contains(result.code, "0.5f"));
+};
+
+// The comparisons, the connectives and the ternary: what a branch tests, and
+// the branchless way to pick between two values that are both already there.
+auto tComparisons = test("Glsl/comparisonsConvert") = []
+{
+    auto result = convert("    float a = fragCoord.x;\n"
+                          "    float b = a > 1.0 && a < 8.0 ? 1.0 : 0.0;\n"
+                          "    float c = !(a == 2.0) || a != 3.0 ? b : a;\n"
+                          "    fragColor = vec4(b, c, 0.0, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "select(a > 1.0f && a < 8.0f, 1.0f, 0.0f)"));
+    check(contains(result.code, "select(!(a == 2.0f) || a != 3.0f, b, a)"));
+};
+
+// The names a loop or a branch writes from outside its own scope are the ones
+// the port has to hold in a variable: a C++ handle rebound inside a lambda is a
+// new handle that dies at the closing brace. Everything else stays a plain
+// binding, which is what keeps an unrolled shader reading the way it did.
+auto tVariablePromotion = test("Glsl/writtenNamesBecomeVariables") = []
+{
+    auto result = convert("    float outer = 0.0;\n"
+                          "    float once = 2.0;\n"
+                          "    while (outer < iTime)\n"
+                          "    {\n"
+                          "        float inner = once * 2.0;\n"
+                          "        outer += inner;\n"
+                          "    }\n"
+                          "    fragColor = vec4(outer, once, 0.0, 1.0);");
+
+    check(result.ok());
+
+    // Written by the body, declared outside it.
+    check(contains(result.code, "auto outer = var(0.0f);"));
+
+    // Only read by the body, and declared inside it: neither needs a variable.
+    check(contains(result.code, "auto once = constant(2.0f);"));
+    check(contains(result.code, "auto inner = once * 2.0f;"));
+    check(contains(result.code,
+                   "auto fragColor = float4(outer(), once, 0.0f, 1.0f);"));
+};
+
+// A bool is a value the EDSL now has, so a flag a shader sets and later tests
+// converts rather than naming the type as a gap.
+auto tBoolLocals = test("Glsl/boolLocalsConvert") = []
+{
+    auto result = convert("    bool hit = false;\n"
+                          "    if (fragCoord.x > iTime)\n"
+                          "        hit = true;\n"
+                          "    fragColor = hit ? vec4(1.0) : vec4(0.0);");
+
+    check(result.ok());
+    check(contains(result.code, "auto hit = var(boolean(false));"));
+    check(contains(result.code, "hit = boolean(true);"));
+    check(contains(result.code, "select(hit()"));
+};
+
+// A return that is not the last thing a body does leaves early, which a ported
+// mainImage cannot: it is one expression returned at the end.
+auto tEarlyReturn = test("Glsl/earlyReturnIsReported") = []
+{
+    auto result = convert("    if (fragCoord.x > iTime)\n"
+                          "        return;\n"
+                          "    fragColor = vec4(1.0);");
+
+    check(reports(result, Glsl::DiagnosticKind::ControlFlow, "early return"));
 };
 
 // However many copies a loop makes of a gap, it is one gap at one place in the
@@ -441,7 +619,7 @@ auto tUserFunctions = test("Glsl/userFunctionsReported") = []
                             "TestShader");
 
     check(reports(result, Glsl::DiagnosticKind::UserFunction, "sdBox"));
-    check(reports(result, Glsl::DiagnosticKind::ControlFlow, "if"));
+    check(reports(result, Glsl::DiagnosticKind::ControlFlow, "early return"));
     check(
         reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, "determinant"));
 };
@@ -518,17 +696,22 @@ auto tChannelGaps = test("Glsl/channelGapsReported") = []
 // gap in dropped code is.
 auto tDroppedChannels = test("Glsl/droppedChannelsAreNotDeclared") = []
 {
-    auto result = transpile("void mainImage(out vec4 fragColor, in vec2 fragCoord)\n"
+    auto result = transpile("vec4 pick(vec2 p)\n"
                             "{\n"
-                            "    fragColor = texture(iChannel0, fragCoord);\n"
-                            "    for (int i = 0; i < int(iTime); i++)\n"
-                            "        fragColor += texture(iChannel1, fragCoord);\n"
+                            "    if (p.x > 0.0)\n"
+                            "        return texture(iChannel1, p);\n"
+                            "    return vec4(0.0);\n"
+                            "}\n"
+                            "void mainImage(out vec4 fragColor, in vec2 fragCoord)\n"
+                            "{\n"
+                            "    fragColor = texture(iChannel0, fragCoord)\n"
+                            "              + pick(fragCoord);\n"
                             "}\n",
                             "TestShader");
 
     check(contains(result.code, "Channel iChannel0;"));
     check(!contains(result.code, "Channel iChannel1;"));
-    check(reports(result, Glsl::DiagnosticKind::ControlFlow, "for"));
+    check(reports(result, Glsl::DiagnosticKind::UserFunction, "pick"));
 };
 
 // Generated headers sit in a project built to eacp's style, so they hold to its

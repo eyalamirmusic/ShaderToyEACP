@@ -4,6 +4,8 @@
 #include <Checker.h>
 #include <Fbm.h>
 #include <Kaleido.h>
+#include <Mandelbrot.h>
+#include <Raymarch.h>
 #include <Tunnel.h>
 #include <Voronoi.h>
 
@@ -132,4 +134,45 @@ auto tChannelReadsCompile = test("Ports/samplesAtALevelAndFetchesATexel") = []
     // 48 bytes: a texture takes no room in the uniform block, a resolution
     // takes a float3's slot, and both channels declare one.
     check(shader.uniformByteSize() == 80);
+};
+
+// The shape unrolling cannot reach, and the one this whole stage was for: a
+// march whose length depends on what it hits, inside a helper the port had to
+// inline around it. The emitted shader holds a real loop with a real jump - not
+// sixty-four copies of a body, and not a body that quietly lost its break.
+auto tRaymarchPortCompiles = test("Ports/marchesWithADataDependentBreak") = []
+{
+    auto shader = Shadertoy::Ports::Raymarch {};
+    const auto& source = shader.source();
+
+    check(!source.source.empty());
+    check(contains(source.source, "while ("));
+    check(contains(source.source, "break;"));
+
+    // One length() in the emitted source: the distance the loop tests is the
+    // distance it steps by, named once and read twice.
+    auto lengths = std::size_t {0};
+
+    for (auto at = source.source.find("length("); at != std::string::npos;
+         at = source.source.find("length(", at + 1))
+        ++lengths;
+
+    check(lengths == 1);
+};
+
+// The rest of the statement vocabulary in one shader: an escape-time loop whose
+// count is a property of the pixel, a bool the loop sets and the shading reads,
+// a colour written by both sides of an if/else and read after it, and a ternary
+// over two comparisons joined by a connective.
+auto tMandelbrotPortCompiles = test("Ports/escapeTimeLoopAndBranches") = []
+{
+    auto shader = Shadertoy::Ports::Mandelbrot {};
+    const auto& source = shader.source();
+
+    check(!source.source.empty());
+    check(contains(source.source, "while ("));
+    check(contains(source.source, "bool "));
+    check(contains(source.source, "else"));
+    check(contains(source.source, " ? "));
+    check(contains(source.source, " && "));
 };

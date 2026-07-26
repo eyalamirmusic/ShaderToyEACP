@@ -11,3 +11,7 @@ add_subdirectory(PlasmaPort)
 # generates. Nothing but a running frame shows that a channel a port declared
 # reaches the draw with the texture bound to it.
 add_subdirectory(TunnelPort)
+
+# The shape stage 5 opened: a march whose length depends on what it hits, which
+# no amount of unrolling reaches.
+add_subdirectory(MarchPort)

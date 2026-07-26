@@ -2,6 +2,7 @@ nano_add_executable(RuntimeTests
         NO_MAIN
         SOURCES
             ChannelTests.cpp
+            ControlFlowTests.cpp
             ProgramTests.cpp
             PortTests.cpp
             TestMain.cpp
@@ -22,3 +23,9 @@ shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Kale
 # plus iChannelResolution across two channels in Channels.
 shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Tunnel.glsl NAME Tunnel)
 shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Channels.glsl NAME Channels)
+
+# Stage 5: the march unrolling cannot reach - a mutable distance, a loop with a
+# data-dependent break, and a helper that had to be inlined around both - and
+# the escape-time loop with the rest of the statement vocabulary around it.
+shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Raymarch.glsl NAME Raymarch)
+shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Mandelbrot.glsl NAME Mandelbrot)

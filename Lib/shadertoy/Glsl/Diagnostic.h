@@ -13,10 +13,10 @@ namespace Shadertoy::Glsl
 // conversion never stops at the first failure.
 enum class DiagnosticKind
 {
-    ControlFlow, // for / while / if / ?: / comparison - needs Var and Select
+    ControlFlow, // do / switch / discard, an early return, a jump with no loop
     UnsupportedIntrinsic, // a builtin the EDSL has no spelling for
     UnsupportedSwizzle, // a component pattern beyond x/y/z/w, xy and xyz
-    UnsupportedType, // int, bool, mat2/mat3, arrays, structs
+    UnsupportedType, // int, ivec/bvec, arrays, structs, the bitwise operators
     UnsupportedTexture, // iChannel sampling
     UserFunction, // a helper the port would have to inline
     Preprocessor, // a directive beyond an object-like #define

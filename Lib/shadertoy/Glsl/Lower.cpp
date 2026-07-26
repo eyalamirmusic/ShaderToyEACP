@@ -72,6 +72,8 @@ public:
         scopes.add(Scope {});
         lowerInto(source.statements, output.statements);
 
+        promoteVariables();
+
         auto result = LowerResult {};
         result.shader = std::move(output);
         result.diagnostics = std::move(diagnostics);
@@ -425,37 +427,96 @@ private:
 
     // --- inlining ---------------------------------------------------------
 
-    // Whether a statement stands between a helper and being inlined, or a loop
-    // and being unrolled. Nested bodies count: a loop whose body holds a jump
-    // cannot be unrolled either, and refusing the whole nest at once is what
-    // keeps one gap from being reported once per copy.
-    bool blocksFlattening(const Statement& statement) const
+    // Whether a statement stops the loop around it from being unrolled: a jump
+    // the copies cannot reproduce, or something the parser could not keep. A
+    // jump inside a nested loop belongs to that loop and is carried into every
+    // copy intact, so the walk stops counting them there.
+    bool blocksUnrolling(const Statement& statement, bool inNestedLoop) const
     {
         switch (statement.kind)
         {
             case StatementKind::Unsupported:
-            case StatementKind::Break:
-            case StatementKind::Continue:
             case StatementKind::Return:
                 return true;
 
+            case StatementKind::Break:
+            case StatementKind::Continue:
+                return !inNestedLoop;
+
             case StatementKind::For:
-                return blocksFlattening(statement.init)
-                       || blocksFlattening(statement.step)
-                       || blocksFlattening(statement.body);
+                return blocksUnrolling(statement.init, inNestedLoop)
+                       || blocksUnrolling(statement.step, inNestedLoop)
+                       || blocksUnrolling(statement.body, true);
+
+            case StatementKind::While:
+                return blocksUnrolling(statement.body, true);
+
+            case StatementKind::If:
+                return blocksUnrolling(statement.body, inNestedLoop)
+                       || blocksUnrolling(statement.elseBody, inNestedLoop);
 
             default:
                 return false;
         }
     }
 
-    bool blocksFlattening(int block) const
+    bool blocksUnrolling(int block, bool inNestedLoop) const
     {
         if (block < 0)
             return false;
 
         for (const auto& statement: source.block(block).statements)
-            if (blocksFlattening(statement))
+            if (blocksUnrolling(statement, inNestedLoop))
+                return true;
+
+        return false;
+    }
+
+    // The same question asked of a loop about itself rather than about the one
+    // around it: its own body is not nested, so a jump there is a jump out of
+    // exactly the loop being considered for unrolling.
+    bool blocksUnrolling(const Statement& loop) const
+    {
+        return blocksUnrolling(loop.init, false) || blocksUnrolling(loop.step, false)
+               || blocksUnrolling(loop.body, false);
+    }
+
+    // Whether a statement stands between a helper and being inlined. A jump no
+    // longer does - the port has loops of its own to put one in - so what is
+    // left is a return that is not the last thing the body does, which would be
+    // a value leaving early, and anything the parser could not keep.
+    bool blocksInlining(const Statement& statement) const
+    {
+        switch (statement.kind)
+        {
+            case StatementKind::Unsupported:
+            case StatementKind::Return:
+                return true;
+
+            case StatementKind::For:
+                return blocksInlining(statement.init)
+                       || blocksInlining(statement.step)
+                       || blocksInlining(statement.body);
+
+            case StatementKind::While:
+                return blocksInlining(statement.body);
+
+            case StatementKind::If:
+                return blocksInlining(statement.body)
+                       || blocksInlining(statement.elseBody);
+
+            default:
+                return false;
+        }
+    }
+
+    bool blocksInlining(int block) const
+    {
+        if (block < 0)
+            return false;
+
+        for (const auto& statement: source.block(block).statements)
+            if (blocksInlining(statement))
                 return true;
 
         return false;
@@ -474,14 +535,42 @@ private:
             if (writes && statement.name == name)
                 return true;
 
-            if (statement.kind == StatementKind::For
-                && (assignsTo(statement.init, name)
-                    || assignsTo(statement.step, name)
-                    || assignsTo(statement.body, name)))
+            if (assignsTo(statement.init, name) || assignsTo(statement.step, name)
+                || assignsTo(statement.body, name)
+                || assignsTo(statement.elseBody, name))
                 return true;
         }
 
         return false;
+    }
+
+    // Every name a construct's bodies write, so the constant each one currently
+    // stands for can be given up before the body runs. Inside a loop nothing
+    // written is a constant any more, however literal the value assigned is:
+    // the second iteration would read what the first left there.
+    void collectAssigned(int block, std::set<std::string>& names) const
+    {
+        if (block < 0)
+            return;
+
+        for (const auto& statement: source.block(block).statements)
+        {
+            if (statement.kind == StatementKind::Assign
+                || statement.kind == StatementKind::Declare)
+                names.insert(statement.name);
+
+            collectAssigned(statement.init, names);
+            collectAssigned(statement.step, names);
+            collectAssigned(statement.body, names);
+            collectAssigned(statement.elseBody, names);
+        }
+    }
+
+    void forgetConstants(const std::set<std::string>& names)
+    {
+        for (const auto& name: names)
+            if (auto* binding = find(name))
+                binding->isConstant = false;
     }
 
     bool canInline(const Function& function, const Expr& call) const
@@ -518,7 +607,7 @@ private:
             return false;
 
         for (auto index = 0; index < statements.size(); ++index)
-            if (index != terminator && blocksFlattening(statements[index]))
+            if (index != terminator && blocksInlining(statements[index]))
                 return false;
 
         return true;
@@ -710,16 +799,21 @@ private:
                 lowerFor(statement, into);
                 return;
 
+            case StatementKind::While:
+                lowerWhile(statement, into);
+                return;
+
+            case StatementKind::If:
+                lowerIf(statement, into);
+                return;
+
             case StatementKind::Call:
                 lowerCallStatement(statement, into);
                 return;
 
             case StatementKind::Break:
-                report(DiagnosticKind::ControlFlow, "break");
-                return;
-
             case StatementKind::Continue:
-                report(DiagnosticKind::ControlFlow, "continue");
+                lowerJump(statement, into);
                 return;
 
             case StatementKind::Unsupported:
@@ -727,29 +821,61 @@ private:
         }
     }
 
+    // A jump only means anything inside a loop the port kept as a loop; one the
+    // unroller swallowed never reaches here, since a body holding a jump is not
+    // one it unrolls.
+    void lowerJump(const Statement& statement, Vector<Statement>& into)
+    {
+        auto isBreak = statement.kind == StatementKind::Break;
+
+        if (loopSteps.empty())
+        {
+            report(DiagnosticKind::ControlFlow, isBreak ? "break" : "continue");
+            return;
+        }
+
+        // `continue` in a for goes to the step, and the port's loop keeps its
+        // step at the end of the body - so the jump takes the step with it.
+        if (!isBreak && loopSteps.back() >= 0)
+            lowerInto(source.block(loopSteps.back()).statements, into);
+
+        auto jump = Statement {statement.kind};
+        jump.line = statement.line;
+        into.add(std::move(jump));
+    }
+
     void lowerDeclare(const Statement& statement, Vector<Statement>& into)
     {
         auto binding = Binding {};
         binding.isConstant = fold(statement.value, binding.value, true);
+        auto type = statement.type;
 
-        // An integer local that is a constant has no reason to exist in the
-        // port: substituting its value is what keeps `int` off the gap list,
-        // since the EDSL has no integer type to lower it to.
-        if (isIntegerType(statement.type) && binding.isConstant)
+        if (isIntegerType(type))
         {
-            binding.node = number(binding.value);
-            bind(statement.name, binding);
-            return;
-        }
+            // An integer local that is a constant has no reason to exist in the
+            // port: substituting its value is what keeps `int` off the gap
+            // list, since the EDSL has no integer type to lower it to.
+            if (binding.isConstant && keepingCounters == 0)
+            {
+                binding.node = number(binding.value);
+                bind(statement.name, binding);
+                return;
+            }
 
-        if (isIntegerType(statement.type))
-            report(DiagnosticKind::UnsupportedType, statement.type);
+            // The counter of a loop the port kept is the exception: it has to
+            // survive as something the body can step, and a float counts
+            // exactly far past any trip count a shader has. Everywhere else an
+            // integer that will not fold is still the gap it was.
+            if (keepingCounters == 0)
+                report(DiagnosticKind::UnsupportedType, type);
+            else
+                type = "float";
+        }
 
         auto value = lowerExpression(statement.value, into);
         auto emitted = unique(statement.name);
 
-        auto declaration =
-            Statement {StatementKind::Declare, emitted, statement.type};
+        auto declaration = Statement {StatementKind::Declare, emitted, type};
         declaration.value = value;
         declaration.line = statement.line;
         into.add(std::move(declaration));
@@ -800,7 +926,16 @@ private:
         }
 
         // Writing to a name that stands for a literal - a loop counter, or a
-        // substituted parameter - needs somewhere to put the result.
+        // substituted parameter - needs somewhere to put the result. Inside a
+        // loop or a branch that somewhere would be a fresh local per iteration
+        // rather than the name the code outside reads, so what the shader
+        // actually needs there is the integer type the EDSL does not have.
+        if (controlDepth > 0)
+        {
+            report(DiagnosticKind::UnsupportedType, "int");
+            return;
+        }
+
         auto emitted = unique(statement.name);
         auto declaration = Statement {StatementKind::Declare, emitted};
         declaration.value = statement.op.empty()
@@ -849,6 +984,15 @@ private:
 
     void lowerReturn(const Statement& statement, Vector<Statement>& into)
     {
+        // A return the port keeps is the last thing its body does. One inside a
+        // loop or a branch leaves early, which the EDSL has no way to say: a
+        // ported body is one expression returned at the end.
+        if (controlDepth > 0)
+        {
+            report(DiagnosticKind::ControlFlow, "early return");
+            return;
+        }
+
         auto result = Statement {StatementKind::Return};
         result.value = lowerExpression(statement.value, into);
         result.line = statement.line;
@@ -875,7 +1019,7 @@ private:
         auto counter = std::string {};
         auto values = Vector<double> {};
 
-        if (!blocksFlattening(statement) && iterationsOf(statement, counter, values)
+        if (!blocksUnrolling(statement) && iterationsOf(statement, counter, values)
             && iterations + values.size() <= maxIterationsPerShader)
         {
             iterations += values.size();
@@ -897,20 +1041,147 @@ private:
             return;
         }
 
-        report(DiagnosticKind::ControlFlow, "for");
-        measure(statement);
+        // A loop the transpiler cannot run on paper becomes one the port runs:
+        // the init above it, the condition tested each time round, and the step
+        // as the last thing the body does - which is where a `continue` has to
+        // take it too, hence loopSteps.
+        scopes.add(Scope {});
+
+        ++keepingCounters;
+        lowerInto(source.block(statement.init).statements, into);
+        --keepingCounters;
+
+        auto assigned = std::set<std::string> {};
+        collectAssigned(statement.body, assigned);
+        collectAssigned(statement.step, assigned);
+        forgetConstants(assigned);
+
+        auto loop = Statement {StatementKind::While};
+        loop.line = statement.line;
+        loop.condition = lowerLoopCondition(statement.condition, into);
+        loop.body = lowerBody(statement.body, statement.step);
+
+        forgetConstants(assigned);
+        scopes.pop_back();
+
+        into.add(std::move(loop));
     }
 
-    // A loop that will not unroll still has a body, and everything that body
-    // needs is a gap the report should know about. Lowering it once into the
-    // dropped list is what stops one unreachable loop from hiding a dozen
-    // missing intrinsics.
-    void measure(const Statement& statement)
+    void lowerWhile(const Statement& statement, Vector<Statement>& into)
     {
+        if (statement.body < 0)
+            return;
+
+        auto assigned = std::set<std::string> {};
+        collectAssigned(statement.body, assigned);
+        forgetConstants(assigned);
+
+        auto loop = Statement {StatementKind::While};
+        loop.line = statement.line;
+        loop.condition = lowerLoopCondition(statement.condition, into);
+        loop.body = lowerBody(statement.body, -1);
+
+        forgetConstants(assigned);
+        into.add(std::move(loop));
+    }
+
+    // The condition of a loop, which the port re-tests every iteration. A call
+    // the inliner has to put in a statement of its own cannot go there: the
+    // statement would run once, above the loop, and the loop would keep testing
+    // what it left behind.
+    int lowerLoopCondition(int node, Vector<Statement>& into)
+    {
+        if (node < 0)
+        {
+            report(DiagnosticKind::ControlFlow, "loop without a condition");
+            return -1;
+        }
+
+        auto before = into.size();
+        auto lowered = lowerExpression(node, into);
+
+        if (into.size() != before)
+            report(DiagnosticKind::ControlFlow, "call in a loop condition");
+
+        return lowered;
+    }
+
+    // The body of a loop or a branch, lowered into a block of its own. A `for`
+    // passes its step so the block ends with it.
+    int lowerBody(int block, int step)
+    {
+        auto body = Block {};
+
         scopes.add(Scope {});
-        lowerInto(source.block(statement.init).statements, output.dropped);
-        lowerInto(source.block(statement.body).statements, output.dropped);
+        loopSteps.add(step);
+        ++controlDepth;
+
+        if (block >= 0)
+            lowerInto(source.block(block).statements, body.statements);
+
+        if (step >= 0)
+            lowerInto(source.block(step).statements, body.statements);
+
+        --controlDepth;
+        loopSteps.pop_back();
         scopes.pop_back();
+
+        return output.add(std::move(body));
+    }
+
+    // The same for a branch, which is not a loop: a jump inside one belongs to
+    // whatever loop encloses it, so the step stack is left alone.
+    int lowerBranch(int block)
+    {
+        auto body = Block {};
+
+        scopes.add(Scope {});
+        ++controlDepth;
+
+        if (block >= 0)
+            lowerInto(source.block(block).statements, body.statements);
+
+        --controlDepth;
+        scopes.pop_back();
+
+        return output.add(std::move(body));
+    }
+
+    void lowerIf(const Statement& statement, Vector<Statement>& into)
+    {
+        auto taken = 0.0;
+
+        // A condition the transpiler can settle is not a branch at all - the
+        // shape a `#define`d quality switch has - so only the side that runs is
+        // lowered, and the other one costs the port nothing.
+        if (fold(statement.condition, taken, true))
+        {
+            auto body = taken != 0.0 ? statement.body : statement.elseBody;
+
+            if (body >= 0)
+            {
+                scopes.add(Scope {});
+                lowerInto(source.block(body).statements, into);
+                scopes.pop_back();
+            }
+
+            return;
+        }
+
+        auto assigned = std::set<std::string> {};
+        collectAssigned(statement.body, assigned);
+        collectAssigned(statement.elseBody, assigned);
+        forgetConstants(assigned);
+
+        auto branch = Statement {StatementKind::If};
+        branch.line = statement.line;
+        branch.condition = lowerExpression(statement.condition, into);
+        branch.body = lowerBranch(statement.body);
+        branch.elseBody =
+            statement.elseBody >= 0 ? lowerBranch(statement.elseBody) : -1;
+
+        forgetConstants(assigned);
+        into.add(std::move(branch));
     }
 
     // Runs the loop header on paper. Anything that cannot be worked out from
@@ -1001,6 +1272,120 @@ private:
         return folded;
     }
 
+    // --- variables --------------------------------------------------------
+
+    // Which locals the port has to declare as mutable variables. A C++ handle
+    // rebound inside a lambda is a new handle that dies at the closing brace,
+    // so any name a loop or a branch writes and did not itself declare has to
+    // be something the port can assign through instead.
+    //
+    // This runs on the lowered output, where every name is already unique, so
+    // "the declaration of this name" is one statement wherever it sits.
+    void promoteVariables()
+    {
+        auto names = std::set<std::string> {};
+        findVariables(output.statements, names);
+
+        if (names.empty())
+            return;
+
+        auto declared = std::set<std::string> {};
+        markVariables(output.statements, names, declared);
+
+        for (auto& block: output.blocks)
+            markVariables(block.statements, names, declared);
+
+        for (const auto& name: names)
+        {
+            if (declared.count(name) != 0)
+                continue;
+
+            // The out parameter is the one name with no declaration to mark and
+            // a type the port already knows, so a shader whose branches each
+            // write the colour still converts. Anything else written before it
+            // is declared is a gap.
+            if (name == output.fragColor)
+            {
+                auto declaration = Statement {StatementKind::Declare, name, "vec4"};
+                declaration.isVariable = true;
+                output.statements.insert(0, declaration);
+                continue;
+            }
+
+            report(DiagnosticKind::ControlFlow, "write before declaration");
+        }
+    }
+
+    void findVariables(const Vector<Statement>& statements,
+                       std::set<std::string>& names) const
+    {
+        for (const auto& statement: statements)
+        {
+            if (statement.kind != StatementKind::While
+                && statement.kind != StatementKind::If)
+                continue;
+
+            addEscapingWrites(statement.body, names);
+            addEscapingWrites(statement.elseBody, names);
+
+            if (statement.body >= 0)
+                findVariables(output.block(statement.body).statements, names);
+
+            if (statement.elseBody >= 0)
+                findVariables(output.block(statement.elseBody).statements, names);
+        }
+    }
+
+    // The names a body writes that it did not declare - what it leaves behind
+    // for the code after it.
+    void addEscapingWrites(int block, std::set<std::string>& names) const
+    {
+        if (block < 0)
+            return;
+
+        auto declared = std::set<std::string> {};
+        auto assigned = std::set<std::string> {};
+        collectNames(block, declared, assigned);
+
+        for (const auto& name: assigned)
+            if (declared.count(name) == 0)
+                names.insert(name);
+    }
+
+    void collectNames(int block,
+                      std::set<std::string>& declared,
+                      std::set<std::string>& assigned) const
+    {
+        if (block < 0)
+            return;
+
+        for (const auto& statement: output.block(block).statements)
+        {
+            if (statement.kind == StatementKind::Declare)
+                declared.insert(statement.name);
+            else if (statement.kind == StatementKind::Assign)
+                assigned.insert(statement.name);
+
+            collectNames(statement.body, declared, assigned);
+            collectNames(statement.elseBody, declared, assigned);
+        }
+    }
+
+    static void markVariables(Vector<Statement>& statements,
+                              const std::set<std::string>& names,
+                              std::set<std::string>& declared)
+    {
+        for (auto& statement: statements)
+        {
+            if (statement.kind != StatementKind::Declare
+                || names.count(statement.name) == 0)
+                continue;
+
+            statement.isVariable = true;
+            declared.insert(statement.name);
+        }
+    }
+
     const Shader& source;
     Shader output;
 
@@ -1009,6 +1394,17 @@ private:
     std::set<std::string> measured;
     std::map<std::string, int> namesUsed;
     std::map<std::string, double> overrides;
+
+    // The step block of each loop the port kept, innermost last: what a
+    // `continue` inside it has to run before jumping. -1 for a `while`, which
+    // has no step of its own.
+    Vector<int> loopSteps;
+
+    // How deep inside loops and branches the walk is - what makes an early
+    // return an early return - and whether an integer declaration is the
+    // counter of a loop the port kept rather than one to substitute away.
+    int controlDepth = 0;
+    int keepingCounters = 0;
 
     Vector<Diagnostic> diagnostics;
     int iterations = 0;
