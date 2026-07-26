@@ -11,9 +11,9 @@ a matter of opinion into a measurement. Every shader that fails to convert names
 a specific gap, and the number of shaders blocked on each gap is what decides
 which one to close next.
 
-> **⚠️ Early days.** Only the runtime substrate exists so far — the fullscreen
-> pass, the Shadertoy uniform set, and one hand-written port that proves the
-> path. The transpiler itself is stage 1 of the plan below.
+> **⚠️ Early days.** Stages 0 and 1 are done: straight-line GLSL converts, and
+> the generated C++ compiles and runs. Loops, branches, helper functions and
+> texture channels are still ahead — see the plan and the coverage table below.
 
 ## Why this works better than it looks like it should
 
@@ -42,13 +42,19 @@ Mandelbrot and fixed-step raymarchers all land inside this.
 ## What is here now
 
 ```
+Lib/shadertoy/Glsl/       lexer, parser, AST, diagnostics  (no GPU dependency)
+Lib/shadertoy/Emit/       the AST -> C++ EDSL emitter
 Lib/shadertoy/Runtime/    Program (the Shadertoy uniform set + fullscreen pass)
                           ShaderView (clock, pointer, resolution, redraw)
-Apps/Plasma/              a hand port, in the shape the transpiler will emit
+Tools/Transpile/          the shadertoy-transpile CLI
+Corpus/                   shaders the coverage report is measured against
+Apps/Plasma/              a hand port, for comparison
+Apps/PlasmaPort/          the same shader, converted from GLSL at build time
+Tests/Glsl/               lowering and diagnostics
 Tests/Runtime/            vertex layout, uniform block layout, generated stages
 ```
 
-A port looks like this, and this is the target output format for generated code:
+A port looks like this — hand-written or generated, the shape is the same:
 
 ```cpp
 struct PlasmaShader final : Shadertoy::Program
@@ -81,15 +87,23 @@ report over a fixed corpus rather than a subjective sense of progress.
 **Stage 0 — runtime substrate.** *Done.* `Program`, `ShaderView`, the fullscreen
 triangle, the uniform set, and a hand port proving the path end to end.
 
-**Stage 1 — straight-line transpiler.** A hand-written recursive-descent parser
-over the narrow GLSL ES subset Shadertoy uses, lowering to a readable
-`mainImage` body. No loops, no branches. Emits a structured diagnostic for every
-construct it cannot express, and aggregates those into the first coverage table.
+**Stage 1 — straight-line transpiler.** *Done.* A hand-written recursive-descent
+parser over the GLSL subset Shadertoy uses, lowering to a readable `mainImage`
+body: locals, arithmetic, swizzles, vector constructors, compound assignment,
+object-like `#define`s, and the seventeen builtins the EDSL already spells. Every
+construct it cannot express becomes a structured diagnostic, and those aggregate
+into the coverage table below.
 
 Deliberately *not* routed through glslang or SPIRV-Cross: SPIR-V is already
 lowered to a control-flow graph with phi nodes, which is the wrong shape to
 re-emit as structured C++ — that would be decompiling. It also keeps the
 dependency footprint at zero, matching eacp.
+
+The parser accepts more than the emitter can lower, on purpose. Rejecting `if`
+at the parser would collapse every such shader into one useless "syntax error"
+instead of the list of capabilities it actually needs — and an unsupported
+construct is skipped rather than fatal, so one shader reports every wall it hits
+rather than the first.
 
 **Stage 2 — unrolling and inlining.** Constant-trip-count `for` loops unroll;
 user-defined functions inline. Large coverage jump for no change to eacp.
@@ -109,17 +123,76 @@ expression tree into a language, and it is the largest single payoff to eacp.
 **Stage 6 — multi-buffer Shadertoys.** Buffer A–D with feedback, which needs
 render-to-texture and float texture formats in eacp.
 
+## Using it
+
+Convert one shader:
+
+```bash
+build/Tools/Transpile/shadertoy-transpile Corpus/Gradient.glsl -o Gradient.h
+```
+
+It writes nothing and exits non-zero if the shader hit a gap, so a port never
+silently drops something it could not express. `--force` overrides that while a
+gap is being worked on.
+
+Or let the build do it, which is how `Apps/PlasmaPort` works — a `.glsl` in, a
+struct out, no C++ written by hand:
+
+```cmake
+shadertoy_add_port(PlasmaPort GLSL Plasma.glsl NAME Plasma)
+```
+
+```cpp
+#include <Plasma.h>
+Shadertoy::Ports::Plasma shader;   // ready to hand to a ShaderView
+```
+
+Measure the corpus:
+
+```bash
+build/Tools/Transpile/shadertoy-transpile --report Corpus/*.glsl
+```
+
+## The first coverage table
+
+Over the five shaders in `Corpus/` plus `Apps/PlasmaPort/Plasma.glsl`, as of the
+end of stage 1. `Shaders` is the number blocked by that gap, which is what the
+roadmap is sorted by:
+
+| Blocker | Shaders | Occurrences |
+| --- | ---: | ---: |
+| user-function: march | 1 | 2 |
+| control-flow: break | 1 | 1 |
+| control-flow: for | 1 | 1 |
+| control-flow: if | 1 | 1 |
+| intrinsic: atan | 1 | 1 |
+| intrinsic: exp | 1 | 1 |
+| intrinsic: mod | 1 | 1 |
+| swizzle: .yx | 1 | 1 |
+| texture: texture | 1 | 1 |
+| user-function: sdSphere | 1 | 1 |
+
+2 of 5 shaders converted with no gaps.
+
+The corpus is far too small for those counts to rank anything yet — that is what
+scaling it up is for. What it does establish is that the measurement works end to
+end, including the part that is easy to get wrong: a helper function's body is
+skipped, but the loops *inside* it are still counted, so the table does not
+promise that inlining alone would turn `Raymarch.glsl` green when it also needs
+real control flow.
+
 ## The gap ledger
 
-What eacp's EDSL cannot express today, from reading the module. Stage 1's
-diagnostics will replace this hand-written list with a measured one, ranked by
-how many corpus shaders each blocks.
+What eacp's EDSL cannot express today, from reading the module — the standing
+list the table above is gradually replacing with measured counts.
 
 | Blocker | Where it lives in eacp |
 | --- | --- |
 | No comparisons, `select`, `if` or loops; no mutable `Var` | `ShaderGraph.h` — `ExprKind` holds expressions only |
 | No `int`/`bool`/`ivec`, no `mat2`/`mat3`, no arrays or structs | `ShaderTypes.h` |
 | Missing intrinsics: `atan`, `exp`, `log`, `tan`, `asin`, `mod`, `sign`, `reflect`, `refract`, `fwidth` | `ShaderValue.h` |
+| A vector built only from literals is rejected — `ComponentsFor` needs one handle to take a graph from, so `vec3(0.0)` has no direct spelling | `ShaderValue.h` |
+| Swizzles stop at `x/y/z/w`, `xy` and `xyz`; `.zw` and `.yx` have no accessor, though `ValueHandle::swizzle` underneath is fully general | `ShaderValue.h` |
 | No app-facing render-to-texture (`OffscreenTarget` is snapshot-only) | `Frame.h` |
 | Texture formats are 8-bit only; no float/half, no mips | `Texture.h` |
 | `sample()` is fragment-stage only | `ShaderValue.h` |
@@ -154,8 +227,10 @@ non-existent path instead of failing.
 
 Outputs:
 
-- `build/Apps/Plasma/Plasma.app`
-- `build/Tests/Runtime/RuntimeTests`
+- `build/Tools/Transpile/shadertoy-transpile` — the converter
+- `build/Apps/Plasma/Plasma.app` — the hand port
+- `build/Apps/PlasmaPort/PlasmaPort.app` — the same shader, transpiled
+- `build/Tests/Glsl/GlslTests`, `build/Tests/Runtime/RuntimeTests`
 
 ## On licensing the corpus
 

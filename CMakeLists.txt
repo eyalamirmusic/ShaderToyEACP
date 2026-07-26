@@ -34,6 +34,10 @@ endif ()
 set(CMAKE_CXX_STANDARD 20)
 add_subdirectory(Lib)
 
+# The transpiler runs as a build step for the ports below, so it is built
+# whether or not the examples are.
+add_subdirectory(Tools)
+
 option(SHADERTOY_ENABLE_EXAMPLES "Enable Examples for ShaderToyEACP" ${PROJECT_IS_TOP_LEVEL})
 
 if (SHADERTOY_ENABLE_EXAMPLES)

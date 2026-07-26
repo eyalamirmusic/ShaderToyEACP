@@ -33,8 +33,9 @@ cmake --build build --target RuntimeTests
 ```
 
 Outputs:
-- `build/Apps/Plasma/Plasma.app` (macOS bundle)
-- `build/Tests/Runtime/RuntimeTests`
+- `build/Tools/Transpile/shadertoy-transpile` (the converter)
+- `build/Apps/Plasma/Plasma.app`, `build/Apps/PlasmaPort/PlasmaPort.app`
+- `build/Tests/Glsl/GlslTests`, `build/Tests/Runtime/RuntimeTests`
 
 ### Build Options
 
@@ -69,6 +70,25 @@ directory, which the root CMakeLists puts on the module path after fetching it.
 `eacp_default_setup()` reads the bundle plist template out of *this* project's
 `CMake/`, which is why `macOSBundleInfo.plist.in` is vendored here.
 
+### Front end (`Lib/shadertoy/Glsl`, `Lib/shadertoy/Emit`)
+
+Target `shadertoy-glsl`. Portable C++ that reads text and produces text - it
+links only `eacp-core`, never the GPU module, so the transpiler builds and runs
+on a machine with no device.
+
+- `Glsl/Lexer`: tokens, comments, object-like `#define` expansion.
+- `Glsl/Parser`: a recursive-descent parser producing `Glsl::Shader` - an
+  arena of `Expr` nodes referenced by index, mirroring eacp's `ShaderGraph`.
+  It accepts a **wider** grammar than the emitter can lower, and recovers from
+  what it cannot handle, so one shader reports every gap rather than the first.
+- `Emit/CppEmitter`: `Glsl::Shader` -> a C++ header declaring one
+  `Shadertoy::Ports::<Name> : Program`. Minimal parentheses, wrapped to 85
+  columns.
+- `Transpile.h`: the one entry point - source in, code plus diagnostics out.
+
+A diagnostic names one missing capability (`intrinsic: atan`), never a place in
+the file: they are counted across the corpus, and the counts rank the roadmap.
+
 ### Runtime (`Lib/shadertoy/Runtime`)
 
 - `Program`: base for a ported shader. Owns everything the Shadertoy page
@@ -81,6 +101,13 @@ directory, which the root CMakeLists puts on the module path after fetching it.
   refresh. Disables MSAA, which a fullscreen shader cannot benefit from.
 - `SHADERTOY_UNIFORMS(...)`: lists a port's extra uniform members, the way
   `EACP_SHADER` lists a plain `ShaderProgram`'s.
+
+### Build integration
+
+`shadertoy_add_port(<target> GLSL <file> NAME <Struct>)` converts a `.glsl` at
+build time into the target's binary dir and puts it on the include path. It
+fails the build when the shader needs something the EDSL cannot express; pass
+`FORCE` to generate anyway. `Apps/PlasmaPort` is the worked example.
 
 ## Code Style
 
