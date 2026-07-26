@@ -1,0 +1,5 @@
+function(shadertoy_enable_unity_build target)
+    if (SHADERTOY_UNITY_BUILD)
+        set_target_properties(${target} PROPERTIES UNITY_BUILD ON)
+    endif ()
+endfunction()
