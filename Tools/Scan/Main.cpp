@@ -74,15 +74,21 @@ void printUsage()
         << "Converts a corpus of Shadertoys and compiles what converted.\n\n"
         << "Usage:\n"
         << "  shadertoy-scan <directory-or-shader>...\n\n"
-        << "  --out <dir>   where the generated headers are left\n"
-        << "                (default: scan)\n"
-        << "  --jobs <n>    compilers to run at once (default: one per core)\n"
-        << "  --verbose     name every shader that converted and did not\n"
-        << "                compile, with what the compiler said first\n\n"
+        << "  --out <dir>        where the generated headers are left\n"
+        << "                     (default: scan)\n"
+        << "  --jobs <n>         compilers to run at once (default: one per\n"
+        << "                     core)\n"
+        << "  --register <file>  write what survived as CMake a build can\n"
+        << "                     include(), and the entry table beside the\n"
+        << "                     headers it names\n"
+        << "  --verbose          name every shader that converted and did not\n"
+        << "                     compile, with what the compiler said first\n\n"
         << "A shader that does not convert is not compiled: the gap it\n"
         << "reported is already the answer. One that converts and does not\n"
         << "compile is the case the coverage report cannot see, since by then\n"
-        << "it has already said the shader converted.\n";
+        << "it has already said the shader converted.\n\n"
+        << "What --register writes is what a gallery can then be pointed at:\n\n"
+        << "  cmake -B build -DSHADERTOY_EXTERNAL_CORPUS=<the --out dir>\n";
 }
 } // namespace
 
@@ -96,6 +102,23 @@ int main(int argc, char* argv[])
         return options.help ? 0 : 2;
     }
 
-    Coverage::printReport(Coverage::scan(options, probeCompiler()), options.verbose);
+    auto report = Coverage::scan(options, probeCompiler());
+
+    Coverage::printReport(report, options.verbose);
+
+    if (options.registerTo.empty())
+        return 0;
+
+    if (!Coverage::writeRegistration(report, options))
+    {
+        std::cerr << "cannot write " << options.registerTo << "\n";
+        return 1;
+    }
+
+    std::cout << "\nRegistered " << report.compiled() << " shaders in "
+              << options.registerTo << ",\nwith the table beside their headers in "
+              << Coverage::tablePathFor(options) << ".\n"
+              << "That says they compile. Nothing yet says they are right.\n";
+
     return 0;
 }

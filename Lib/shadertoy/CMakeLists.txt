@@ -28,7 +28,9 @@ target_include_directories(shadertoy-corpus PUBLIC ${CMAKE_CURRENT_LIST_DIR}/../
 target_link_libraries(shadertoy-corpus PUBLIC eacp-core PRIVATE eacp-network)
 
 target_sources(shadertoy-corpus PRIVATE
-        Corpus/Fetch.cpp)
+        Corpus/Transport.cpp
+        Corpus/Fetch.cpp
+        Corpus/Dataset.cpp)
 
 set_default_target_setting(shadertoy-corpus)
 shadertoy_enable_unity_build(shadertoy-corpus)

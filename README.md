@@ -11,13 +11,20 @@ a matter of opinion into a measurement. Every shader that fails to convert names
 a specific gap, and the number of shaders blocked on each gap is what decides
 which one to close next.
 
-> **⚠️ Early days.** Stages 0 to 11 are done, and stage 11 is the first one the
-> measurement chose rather than an argument: it closed the eacp row that 27 of
-> the 49 compile failures named, found five bugs of this project's own behind
-> another 20, and built the scan step that scores both. Of the 204 real
-> Shadertoys, **95 now convert *and* compile**, against 51 before it — and the
-> report is honest about four fewer than it used to be, which is the other half
-> of the stage and the more interesting half. The rest of the history:
+> **⚠️ Early days.** Stages 0 to 12 are done. Stage 12 is the first one that
+> moved no number at all, and that is what it was for: 95 of the 204 real
+> Shadertoys convert *and* compile exactly as they did before it, and now
+> **anybody can get that number back**. The corpus the counts are measured over
+> was pulled by hand and could not be asked for; it is `shadertoy-fetch
+> --dataset` now, 204 shaders in five unauthenticated requests, and the first
+> run of it reproduced 99 converted and 95 compiled to the shader. What
+> survived is registered where a build can read it, and `Apps/Gallery` shows
+> 123 shaders rather than 28 — the 28 this repository guarantees, and the 95 it
+> has only measured, marked as such on screen. Stage 11 is the one before it,
+> and the first the measurement chose rather than an argument: it closed the
+> eacp row that 27 of the 49 compile failures named, found five bugs of this
+> project's own behind another 20, and built the scan step that scores both.
+> The rest of the history:
 >
 > Stages 0 to 8: straight-line GLSL converts,
 > constant-trip-count loops unroll, helper functions inline, the intrinsic and
@@ -36,7 +43,8 @@ which one to close next.
 > first time any of it was measured against shaders nobody here wrote: 204 real
 > Shadertoys, half of which convert, half of *those* compile, and what stops the
 > rest is a ranked list with eacp's own name at the top of it — which is what
-> stage 11 then spent. See the plan and the coverage table below.
+> stage 11 then spent, and stage 12 made reproducible. See the plan and the
+> coverage table below.
 
 ## Why this works better than it looks like it should
 
@@ -83,21 +91,27 @@ Lib/shadertoy/Runtime/    Program (the Shadertoy uniform set + fullscreen pass)
                           ShaderView (clock, pointer, resolution, pass order)
 Tools/Transpile/          the shadertoy-transpile CLI
 Lib/shadertoy/Coverage/   both tables over one corpus: what does not convert,
-                          and what converts and then does not compile
+                          and what converts and then does not compile - plus
+                          the registration of what survived both
 Tools/Scan/               shadertoy-scan, which runs both over a directory
-Lib/shadertoy/Corpus/     the API, and the books a 1500-request month needs
-Tools/Corpus/             shadertoy-fetch, which pulls Shadertoys by id
+Lib/shadertoy/Corpus/     Transport (one request, and whatever came back), the
+                          API and the books a 1500-request month needs, and the
+                          published dataset that needs no key at all
+Tools/Corpus/             shadertoy-fetch, which pulls Shadertoys by id, or the
+                          whole corpus the counts are measured over
 Corpus/                   shaders the coverage report is measured against
                           (ids.txt names the ones that are not committed)
 Corpus/Imported/          real Shadertoys, by other people, permissively licensed
-Tests/Corpus/             the fetcher's bookkeeping, over a stubbed API
-Tests/Coverage/           the scan's tabulation, over a stubbed compiler
+Tests/Corpus/             the bookkeeping of both fetchers, over stubbed servers
+Tests/Coverage/           the scan's tabulation and its registration, over a
+                          stubbed compiler
 Apps/Plasma/              a hand port, for comparison
 Apps/PlasmaPort/          the same shader, converted from GLSL at build time
 Apps/TunnelPort/          a converted port that reads a texture channel
 Apps/MarchPort/           a converted port that marches a loop with a break
 Apps/TrailPort/           two converted ports, one reading what it wrote last frame
-Apps/Gallery/             every converted port, switchable, on screen
+Apps/Gallery/             every converted port, switchable, on screen - the
+                          ones committed here, and a scanned corpus beside them
 Tests/Glsl/               lowering and diagnostics
 Tests/Runtime/            vertex layout, uniform block layout, generated stages,
                           corpus ports compiled from their GLSL by the build, and
@@ -503,12 +517,12 @@ compiler that never ran. Its first run reproduced stage 10's hand count exactly
 (100 converted, 51 compiled, 49 not) in six seconds, which is what made the rest
 of the stage a series of measurements rather than of opinions.
 
-It is half of what this stage's plan said, and the missing half is stage 12's:
-"convert everything in a directory, compile-test each, **register the
-survivors** and tabulate the rest". The tabulating is done and the registering
-is not, so what converts and compiles is a number in a table and nothing a
-target can consume — which is why `Apps/Gallery` still shows the 28 shaders this
-repository holds rather than the 95 that pass.
+It was half of what this stage's plan said, and the missing half became stage
+12's: "convert everything in a directory, compile-test each, **register the
+survivors** and tabulate the rest". The tabulating landed here and the
+registering did not, so what converted and compiled was a number in a table and
+nothing a target could consume — which is why `Apps/Gallery` showed the 28
+shaders this repository holds rather than the 95 that pass, until stage 12.
 
 **eacp: a literal in any argument position.** The largest single row the table
 has ever had, and it closed as one mechanism rather than as thirty overloads —
@@ -546,33 +560,57 @@ something else. It costs four shaders off the converted count, two of which had
 been compiling. That direction is the point: the number went down because it had
 been wrong.
 
-**Stage 12 — the survivors, on screen.** *Next*, and it is the half of stage
-11's third piece that did not get built rather than anything new the measurement
-asked for. 95 shaders now convert and compile and the only way to know that is
-a number: `Apps/Gallery` shows 28, which is every shader this repository holds,
-and there is no way to point it at the ones that do not live here. Four pieces,
-and the first is the one that stops any of this being reproducible:
+**Stage 12 — the survivors, on screen.** *Done*, and it is the only stage so far
+that moved no number. That is what it was for: the counts are the same 99 and 95
+they were, and the difference is that they can now be got back by anybody who
+runs two commands. A measurement nobody else can reproduce is not much better
+than one nobody took.
 
 **A fetcher for the corpus the counts are measured over.** Every number in this
-README comes from `Vipitis/Shadereval-inputs`, and nothing here can ask for it.
-`shadertoy-fetch` talks to Shadertoy's own API, which wants a key that wants
+README comes from `Vipitis/Shadereval-inputs`, and nothing here could ask for
+it. `shadertoy-fetch` talks to Shadertoy's own API, which wants a key that wants
 Silver status; the dataset is a different endpoint that wants no key at all, and
-the 204 were pulled by hand. That makes the input to the whole measurement the
-one thing the repository cannot reproduce, which is a worse position than not
-having measured. It costs one more `Transport` behind the bookkeeping that is
-already there — `Lib/shadertoy/Corpus` is written around the transport being
-replaceable, which is what `Tests/Corpus` exercises. What comes back beside each
-shader is its id, its author and its licence, so `Corpus/External` gains the
-licence note that decides what may ever be committed rather than only measured.
+the 204 had been pulled by hand. That made the input to the whole measurement
+the one thing the repository could not reproduce, which is a worse position than
+not having measured.
+
+It cost one more `Transport` behind bookkeeping of the same shape, and the
+factoring is the honest part: `Reply`, `Transport` and the rest now live in
+`Corpus/Transport.h`, so the second fetcher is a peer of the first rather than
+something bolted to its side. `shadertoy-fetch --dataset` is the whole of it —
+204 shaders in five unauthenticated requests — and the id, the author and the
+licence come back beside each one, so `Corpus/External` gains the `.licences`
+ledger that decides what may ever be committed rather than only measured. All
+204 turn out to be permissively licensed: 144 MIT, 51 CC0, and nine between
+five other licences.
+
+Two things about that endpoint had to be got right rather than assumed. A row
+is one *function* of one shader, so the 204 arrive as 467 rows and the count
+that matters is the distinct one. And it **shortens a cell rather than refusing
+it** — a shader cut off mid-function still parses far enough to report gaps, so
+taking one would have put a blocker in the coverage table that belonged to the
+transport rather than to the shader. A truncated copy is not a shader here, and
+a run that only ever saw one says so.
+
+The first run of it reproduced stage 11's hand-checked figures exactly: 99
+converted, 95 compiled, 4 did not. That is the stage's real result, and it is
+worth more than a new number would have been.
 
 **`shadertoy-scan --register <file>`.** What survived, written where a build can
-read it: the names and the headers they were converted into, as a CMake list,
-plus the include list and entry table an app would otherwise hold by hand. The
-scan already knows all of it — `Coverage::Report::outcomes` says which shader
-passed and where its header went — so this is the step from a table to something
-consumable and not new information. It is also what makes the survivor count
-checkable in the other direction: a registration with 95 entries and a table
-saying 95 agree, or one of the two is lying.
+read it. Two files, because two different things consume them: a CMake list with
+the names, the headers and the include path, and beside the generated headers an
+X-macro over the whole set — the include list and the entry table an app would
+otherwise hold by hand. The scan already knew all of it, so this is the step
+from a table to something consumable and not new information.
+
+It found one thing on the way, and it is this project's own. The scan names a
+generated header after the struct it declares, and *two shaders can want one
+name*: Shadertoy ids are case-sensitive and these names are not, and everything
+C++ rejects in a name becomes an underscore, so `a-b` and `a_b` are one struct
+as surely as `clGyWm` and `ClGyWm` are. The second would have overwritten the
+first and then been compiled against it — a compile result attributed to the
+wrong shader, which is the one failure a coverage table cannot survive. Nothing
+in these 204 collides; the fix is that nothing ever can.
 
 **A Gallery that takes a directory.** Beside the committed list rather than
 instead of it, because the two mean different things and only one of them can
@@ -583,22 +621,34 @@ external corpus cannot keep that rule: 105 of the 204 do not convert and 4 more
 do not compile, so a build that insisted would never run. So
 `-DSHADERTOY_EXTERNAL_CORPUS=<dir>` adds whatever the registration says
 survived, off by default, and the gallery has a guaranteed half and a measured
-half.
+half — 123 entries, and the measured ones say so in the title bar, because which
+half a doubtful frame belongs to is the first thing anybody looking at one wants
+to know.
+
+Building it is the second check on the same claim, and not the same check: the
+scan compiles each header alone, and this compiles all 95 into one translation
+unit beside the 28. It also settled what an external port does with a channel it
+was never handed. Only one of the 95 declares one — but every declared texture
+is a binding the draw has to satisfy, and what the page bound it to is in
+neither the GLSL nor the corpus, so an unwired port gets the generated image the
+textured ports here already use. The frame is then the shader's arithmetic over
+*something* rather than a draw missing a binding.
 
 **And then looking at them,** which is the piece with no tool and the reason for
 the other three. 95 shaders nobody here wrote, converted by a transpiler that
 has never once been checked against a picture of what they should look like, is
 a great many frames to be quietly wrong about — and every validation layer above
-stops short of exactly that. Stage 10 added the gallery because a shader can
-convert, compile, satisfy every pixel a test thought to check and still not be
-the shader it came from; this is that argument at ten times the scale, and the
-imported eight are still the only ports anybody has compared against the page
-they came from. What the pieces above buy is that comparison being *possible*.
-They do not buy it being done, and the ledger should not pretend otherwise.
+stops short of exactly that. What the three pieces above buy is that comparison
+being *possible*: it is now one build away, and entry 37 of 123 is `DdlyRr` by
+lush3dash1, drawing something, which is the first frame from that half anybody
+has seen. They do not buy the comparison being *done* — the imported eight are
+still the only ports checked against the page they came from — and the ledger
+should not pretend otherwise.
 
-**Stage 13 — the early return.** *After that*, and for the first time the list
-is one the scan prints rather than one anybody chose. **An early `return`**
-blocks 71 of the 204, which is more than twice the next four rows put together.
+**Stage 13 — the early return.** *Next*, and for the first time the list is one
+the scan prints rather than one anybody chose — and, since stage 12, one anybody
+can print again. **An early `return`** blocks 71 of the 204, which is more than
+twice the next four rows put together.
 A `return` in the middle of a function is how a shader says "not this pixel",
 and neither unrolling nor inlining flattens one — what it needs is either a
 `Var` the inlined body writes and the caller reads under a guard, or a real
@@ -658,18 +708,31 @@ A channel pointed at a buffer follows it rather than copying the texture it
 happened to be showing, since what a buffer publishes is exactly what its swap
 changes every frame.
 
-Measure a corpus — this is the exact command both tables below come from, and
-it is the one to rerun after changing anything in either column:
+Measure a corpus. These are the exact two commands both tables below come from,
+and they are the ones to rerun after changing anything in either column:
 
 ```bash
-build/Tools/Scan/shadertoy-scan <directory-of-glsl> --out scan
+build/Tools/Corpus/shadertoy-fetch --dataset          # 204 shaders, no key
+build/Tools/Scan/shadertoy-scan Corpus/External --out scan \
+    --register scan/Survivors.cmake
 ```
 
-It converts every shader in the directory, compiles what converted, and prints
-what blocked the rest — `--verbose` names each shader that converted and did
-not compile, with what the compiler said first, which is what a table cannot be
-acted on without. The generated headers are left in `--out`, because a failure
-should be something to go and look at.
+The fetch takes five requests and wants nothing from anybody: it pulls
+`Vipitis/Shadereval-inputs`, which is the corpus every count here is measured
+over, and writes the id, the author and the licence beside each shader. A run
+never writes a shader it already has, and `.licences` beside them is what says
+which ones could ever be committed rather than only measured.
+
+The scan then converts every shader in the directory, compiles what converted,
+and prints what blocked the rest — `--verbose` names each shader that converted
+and did not compile, with what the compiler said first, which is what a table
+cannot be acted on without. The generated headers are left in `--out`, because a
+failure should be something to go and look at.
+
+`--register` is what turns the survivors from a number into something a build
+can consume: a CMake list of the names and headers at the path given, and an
+`ExternalCorpus.h` beside the headers holding the includes and an entry table.
+That is what the gallery below takes.
 
 For the first table only, and without needing a toolchain:
 
@@ -686,26 +749,45 @@ build/Apps/Gallery/Gallery.app/Contents/MacOS/Gallery   # arrows, space
 
 Every shader in `Corpus/` is compiled into that one app — including the eight
 real Shadertoys in `Corpus/Imported/`, which are there because their authors
-licensed them permissively — and the arrow keys walk through them. The report says a shader converted, and `RuntimeTests` says the
-C++ it converted to compiles and satisfies a handful of pixels; neither says the
-frame looks like the shader, and a march that stops one step early reports
-nothing, compiles, and renders something plausible. The gallery is also the only
-target that compiles every port, so a shader the transpiler is happy with and a
-C++ compiler is not fails this build rather than going unnoticed.
+licensed them permissively — and the arrow keys walk through them. The report
+says a shader converted, and `RuntimeTests` says the C++ it converted to
+compiles and satisfies a handful of pixels; neither says the frame looks like
+the shader, and a march that stops one step early reports nothing, compiles, and
+renders something plausible. The gallery is also the only target that compiles
+every port, so a shader the transpiler is happy with and a C++ compiler is not
+fails this build rather than going unnoticed.
 
 Those 28 entries are every shader this repository holds, and they are not the 95
 that convert and compile: the other 67 are shaders whose licence keeps them off
-this repository, and nothing yet points the gallery at a directory of them. That
-is stage 12.
+this repository. Point the build at a scanned corpus and they come too:
 
-Or measure real Shadertoys, which is what the counts were built to rank. The
-ids are committed and the shaders are not:
+```bash
+cmake -B build -DSHADERTOY_EXTERNAL_CORPUS=$PWD/scan
+cmake --build build --target Gallery
+build/Apps/Gallery/Gallery.app/Contents/MacOS/Gallery
+# 123 shaders: 28 this repository holds and this build guarantees,
+# 95 a scan measured.
+```
+
+The directory is the one the scan left its headers in, and what it adds is
+whatever `--register` wrote there. The two halves stay apart on screen — a
+measured entry says so in the title bar — because they are different claims:
+the 28 fail this build if one of them stops compiling, and the 95 are shaders a
+scan says a compiler accepted and nobody has looked at.
+
+Or go past the 204 and measure Shadertoy itself, which is what the counts were
+built to rank and what the API is for. The ids are committed and the shaders are
+not:
 
 ```bash
 export SHADERTOY_API_KEY=...            # https://www.shadertoy.com/myapps
 build/Tools/Corpus/shadertoy-fetch      # everything in Corpus/ids.txt
 build/Tools/Transpile/shadertoy-transpile --report Corpus/External/*.glsl
 ```
+
+That is the other fetcher, and the one with a budget: it fills the same
+directory `--dataset` does, so the two accrete into one corpus rather than
+competing for it.
 
 Filling the list is the same tool: `--list <n>` asks the API's index for ids
 and adds the new ones to `Corpus/ids.txt`, `--query <term>` searches instead of
@@ -732,9 +814,11 @@ being counted.
 ### What does not convert
 
 Over the 204 real Shadertoys in `Vipitis/Shadereval-inputs`, which is the first
-corpus here that nobody wrote for this project. `Shaders` is the number blocked
-by that gap, which is what the roadmap is sorted by. The ten rows at the top of
-it, out of 222 that run down to a great many blocking one shader each:
+corpus here that nobody wrote for this project, and which since stage 12 is two
+commands rather than an afternoon — the ones under "Measure a corpus" above.
+`Shaders` is the number blocked by that gap, which is what the roadmap is sorted
+by. The ten rows at the top of it, out of 222 that run down to a great many
+blocking one shader each:
 
 | Blocker | Shaders | Occurrences |
 | --- | ---: | ---: |
@@ -776,10 +860,10 @@ compiler; **95 of them build and 4 do not**. Grouped by the first error, with
 | Blocker | Shaders | Unblocks | Whose is it |
 | --- | ---: | ---: | --- |
 | Invalid operands — a type inferred wrongly and carried into an operator | 2 | 2 | transpiler |
-| `no viable overloaded '='` — the same, one statement later | 2 | 2 | transpiler |
+| `no viable overloaded '='` — the same wrong type, one statement later | 2 | 2 | transpiler |
 
 Nothing in eacp's column is left in it, which has not been true before. What
-stage 11 was worth, one piece at a time:
+stage 11 was worth, one piece at a time, and what stage 12 was worth after it:
 
 | After | Converted | Compiled |
 | --- | ---: | ---: |
@@ -790,16 +874,27 @@ stage 11 was worth, one piece at a time:
 | Matrix columns, the scalar broadcast, vector `==` | 103 | 95 |
 | eacp: `vector * matrix`, `scalar * matrix`, `bool == bool`, a matrix `var`, `int(bool)` | 103 | 97 |
 | An overloaded helper is not inlined | 99 | 95 |
+| Stage 12, over a corpus it fetched itself | 99 | 95 |
 
-The last row is the only one that moves a number downwards, and it is the one
-worth reading twice: two of the shaders it took off the converted list had been
-*compiling*, with a helper body inlined that was written for other argument
-types. A measurement that only ever improves is not measuring.
+Two rows of that table are worth reading twice, and they are the two that do not
+go up. The second-to-last is the only one that moves a number *downwards*: two
+of the shaders it took off the converted list had been *compiling*, with a
+helper body inlined that was written for other argument types. A measurement
+that only ever improves is not measuring.
+
+The last one moves nothing, and is the first time these figures were produced by
+a machine that also went and got the shaders. Stage 11's 99 and 95 were measured
+over a directory somebody had filled by hand; stage 12's are over one
+`shadertoy-fetch --dataset` wrote, and they agree to the shader. A number that
+comes out the same when the whole path to it is rebuilt is a different kind of
+number from one that has only ever been produced once.
 
 This is still the table to take seriously, because every row in it is a shader
 the coverage report had already called converted. It is also the reason
 `Apps/Gallery` compiles every port rather than a chosen few: the report cannot
-fail a build, and a compiler can.
+fail a build, and a compiler can — and since stage 12 that goes for the 95 as
+well as the 28, which is 95 headers that compiled one at a time being made to
+compile together.
 
 The last row that came off it was `Surface.glsl`'s, in stage 8, and it came off
 without eacp changing at all — see below, because that is the interesting part,
@@ -1339,6 +1434,25 @@ broadcast `vec3(x)`, which emits as `float3(x, x, x)`: one node, three times.
 ninety-seven columns wide. Saying that the arguments are the same node repeated
 is the whole fix, and it is the last shape that could still run past the limit.
 
+Stage 12's is the first one found by building a *consumer* of the measurement
+rather than by taking the measurement, and it is about names. The scan calls a
+generated header after the struct it declares, and a struct name is a file stem
+with everything C++ rejects turned into an underscore and the first letter
+raised — so two shaders can want one name. `a-b` and `a_b` are one struct, and
+so are `clGyWm` and `ClGyWm`, which matters because Shadertoy ids are
+case-sensitive and six characters long. The second shader would have overwritten
+the first's header and then been compiled against it: a clean report, a passing
+compile, and a result belonging to a shader that was never measured. Names are
+disambiguated where they are handed out now, which is once per scan and before
+any of them is written. Nothing in the 204 collides — the point is that a corpus
+ten times the size would, silently, and the coverage table is the one thing here
+that cannot afford to be quietly wrong.
+
+That is also the whole of what stage 12 added to this list, and nothing at all
+to the one below it: a stage spent making a measurement reproducible turned up
+no gap in eacp, which is what it should do. The gaps are found by *measuring*,
+and this stage did not move the measurement.
+
 ## The gap ledger
 
 What eacp's EDSL cannot express today, from reading the module — the standing
@@ -1442,8 +1556,15 @@ Since stage 11 the same layer runs over a whole corpus without a build:
 table is a command rather than an afternoon. Six seconds over 204 shaders is
 what makes it something to run *after every change* rather than once a stage —
 which is the point, because the numbers it prints are the only reason to prefer
-one piece of work to another. Its own tabulation is checked by
-`Tests/Coverage`, over a compiler that never ran.
+one piece of work to another. Its own tabulation, and the registration it
+writes, are checked by `Tests/Coverage`, over a compiler that never ran.
+
+Since stage 12 the corpus underneath it is a command too, which is what makes
+the six seconds worth anything to anybody else: `shadertoy-fetch --dataset`
+takes five requests and no key, and the run that first replaced a hand-filled
+directory printed the same 99 and 95 the hand-filled one had. A layer whose
+input cannot be reproduced is measuring the directory rather than the
+transpiler.
 
 **Rendered pixels.** *Started in stage 4, and load-bearing since stage 5.*
 `Tests/Runtime/ChannelTests`, `ControlFlowTests`, `ArrayTests`, `VectorTests`,
@@ -1545,13 +1666,18 @@ buffer rather than in its clock. `Buffer::clear()` is that fix, and
 `BufferTests` now pins it — a layer above turning into a layer below, which is
 where a finding from this one is supposed to end up.
 
-It is also the layer with the widest gap between what it could catch and what it
-has been pointed at. Stage 11 took the shaders that convert *and* compile from
-51 to 95, and this layer has seen 28 of them — every one that lives here, and
-none of the rest, because the gallery's port list is written by hand and the
-rest are files a licence keeps out of this repository. Closing that is stage 12,
-and it is worth saying plainly that a count of 95 is a claim about compilers
-rather than about pictures.
+It used to be the layer with the widest gap between what it could catch and what
+it had been pointed at: stage 11 took the shaders that convert *and* compile
+from 51 to 95, and this layer could only ever see the 28 that live here, because
+the gallery's port list was written by hand and the rest are files a licence
+keeps out of this repository. Stage 12 closed that half of it —
+`-DSHADERTOY_EXTERNAL_CORPUS` puts all 123 in one app, and the 95 say in the
+title bar that they are the measured ones.
+
+What it did not close, and what is worth saying plainly, is that a count of 95
+is still a claim about compilers rather than about pictures. This layer is a
+person, and a person has now looked at one of the 95. The other 94 are one
+keypress each and nobody's afternoon yet.
 
 For the imported shaders there is a fifth check available and no way to automate
 it: the shader's own page. `Corpus/Imported/3l23RK.glsl` is iq's *Pie - distance
@@ -1578,17 +1704,31 @@ cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Debug -DSHADERTOY_UNITY_BUILD=OFF \
 Use `$HOME`, not `~` — CMake does not expand a tilde, and it configures against a
 non-existent path instead of failing.
 
+One option beyond those two, and it is off by default because what it adds is
+measured rather than guaranteed:
+
+```bash
+cmake -B build -DSHADERTOY_EXTERNAL_CORPUS=$PWD/scan
+```
+
+`<dir>` is where `shadertoy-scan --register` left its headers, and every shader
+there that converted and compiled is added to `Apps/Gallery` beside the ones
+this repository holds. The build fails if the directory holds no registration,
+and says which command writes one.
+
 Outputs:
 
 - `build/Tools/Transpile/shadertoy-transpile` — the converter
-- `build/Tools/Scan/shadertoy-scan` — the converter and a compiler over a corpus
+- `build/Tools/Scan/shadertoy-scan` — the converter and a compiler over a corpus,
+  and the registration of what survived both
 - `build/Apps/Plasma/Plasma.app` — the hand port
 - `build/Apps/PlasmaPort/PlasmaPort.app` — the same shader, transpiled
 - `build/Apps/TunnelPort/TunnelPort.app` — a transpiled port reading a channel
 - `build/Apps/MarchPort/MarchPort.app` — a transpiled port marching a loop
 - `build/Apps/TrailPort/TrailPort.app` — two transpiled ports, one a feedback buffer
-- `build/Apps/Gallery/Gallery.app` — the whole corpus, one shader at a time
-- `build/Tools/Corpus/shadertoy-fetch` — the corpus fetcher
+- `build/Apps/Gallery/Gallery.app` — the whole corpus, one shader at a time,
+  and a scanned one beside it when the build was pointed at one
+- `build/Tools/Corpus/shadertoy-fetch` — the corpus fetcher, by id or by dataset
 - `build/Tests/Glsl/GlslTests`, `build/Tests/Runtime/RuntimeTests`,
   `build/Tests/Corpus/CorpusTests`, `build/Tests/Coverage/CoverageTests`
 
@@ -1618,6 +1758,18 @@ right side of — the site is reachable in a browser, and taking what the API
 declines to serve would be helping oneself to exactly what those authors opted
 out of.
 
+The dataset fetcher is under the same rule and keeps it the same way. Every one
+of the 204 in `Vipitis/Shadereval-inputs` carries an explicit licence — 144 MIT,
+51 CC0, and nine between `cc-by-4.0`, `cc-by-3.0`, `isc`, `apache-2.0` and
+`libpng` — because that is what its collector recorded beside each shader, and
+that licence comes back with the shader rather than being looked up afterwards.
+It is written into the file's own header and into `.licences` beside them, which
+is the record that decides what may ever be committed here rather than only
+measured. `Corpus/External` is gitignored all the same: a permissive licence
+makes committing a shader *possible*, and the eight in `Corpus/Imported/` are
+the ones where somebody decided to.
+
 The same applies to the images a channel reads: Shadertoy's own textures are
 not ours to ship either, so `Apps/TunnelPort` generates the brick pattern it
-samples rather than bundling one.
+samples rather than bundling one — and a scanned port that declares a channel
+nobody wired up gets that same generated image, for the same reason.

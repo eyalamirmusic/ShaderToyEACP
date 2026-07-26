@@ -37,3 +37,8 @@ xcuserdata
 # not - their default licence makes redistribution a real question. See
 # Corpus/ids.txt and Tools/Corpus.
 /Corpus/External
+
+# What shadertoy-scan leaves behind: a header per shader that converted, and
+# the registration naming the ones that then compiled. It is a measurement of
+# Corpus/External, which is not committed either.
+/scan

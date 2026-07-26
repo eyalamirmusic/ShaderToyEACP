@@ -59,6 +59,41 @@ foreach (shader IN LISTS GALLERY_IMPORTED)
             NAME S${shader})
 endforeach ()
 
+# The measured half, off by default. -DSHADERTOY_EXTERNAL_CORPUS=<dir> points
+# at the directory shadertoy-scan left its generated headers in, and whatever
+# converted and then compiled there is added beside the list above:
+#
+#   shadertoy-fetch --dataset
+#   shadertoy-scan Corpus/External --out scan --register scan/Survivors.cmake
+#   cmake -B build -DSHADERTOY_EXTERNAL_CORPUS=$PWD/scan
+#
+# Beside the committed list rather than instead of it, because the two mean
+# different things and only one of them can keep the rule that makes it worth
+# having. Every port above fails this build if it stops compiling, which is why
+# each is worth holding by hand; most of an external corpus does not convert at
+# all, so a build that insisted on one would never run.
+if (SHADERTOY_EXTERNAL_CORPUS)
+    set(external_table "${SHADERTOY_EXTERNAL_CORPUS}/ExternalCorpus.h")
+
+    if (NOT EXISTS "${external_table}")
+        message(FATAL_ERROR
+                "SHADERTOY_EXTERNAL_CORPUS is ${SHADERTOY_EXTERNAL_CORPUS}, "
+                "which holds no ExternalCorpus.h. That file is what registers "
+                "the survivors, and shadertoy-scan --register writes it:\n"
+                "  shadertoy-scan <corpus> --out ${SHADERTOY_EXTERNAL_CORPUS} "
+                "--register <file>.cmake")
+    endif ()
+
+    # The table names the headers beside it, so the directory is the whole of
+    # the include path and the one #include reaches all of them. The CMake list
+    # --register writes is for a target that wants the names; this one only
+    # wants them compiled in, and the X-macro is already that.
+    target_include_directories(Gallery PRIVATE "${SHADERTOY_EXTERNAL_CORPUS}")
+
+    message(STATUS "Gallery: adding the external corpus in "
+            "${SHADERTOY_EXTERNAL_CORPUS}")
+endif ()
+
 set(BUNDLE_ID "com.shadertoyeacp.gallery")
 
 set_target_properties(Gallery PROPERTIES

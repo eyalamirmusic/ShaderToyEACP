@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Transport.h"
+
 #include <eacp/Core/Utils/Containers.h>
 
 #include <filesystem>
@@ -14,34 +16,11 @@
 // until the month does. So the corpus accretes: the id list is the queue, the
 // directory is the record, and each month drains more of the one into the
 // other.
+//
+// Dataset.h is the other way to fill the same directory, and wants no key.
 namespace Shadertoy::Corpus
 {
 using eacp::Vector;
-
-struct Reply
-{
-    // Whether the API itself answered, as opposed to the edge in front of it.
-    // Only an answer costs a request, which is why the distinction is a
-    // predicate rather than a comment at the call site.
-    bool arrived() const { return error.empty() && statusCode == 200; }
-
-    int statusCode = 0;
-    std::string content;
-    std::string error;
-};
-
-// The one thing here that talks to the network, and so the one thing a test
-// replaces: everything around it is bookkeeping over whatever this returns.
-using Transport = std::function<Reply(const std::string& url)>;
-
-Reply httpGet(const std::string& url);
-
-// YYYY-MM-DD. The month of it is what the quota ledger is keyed on, and the
-// whole of it is what a block of discovered ids is stamped with.
-std::string today();
-
-void printNote(const std::string& text);
-void printWarning(const std::string& text);
 
 struct Options
 {

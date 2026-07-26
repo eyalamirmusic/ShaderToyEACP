@@ -1,13 +1,10 @@
 #include "Fetch.h"
 
-#include <eacp/Network/HTTP/Http.h>
-
-#include <Miro/Json.h>
+#include "Json.h"
 
 #include <charconv>
-#include <chrono>
+#include <filesystem>
 #include <fstream>
-#include <iostream>
 #include <map>
 #include <thread>
 
@@ -219,28 +216,6 @@ Refusals loadRefusals(const std::filesystem::path& path)
     return refusals;
 }
 
-std::string percentEncoded(const std::string& text)
-{
-    static constexpr auto digits = "0123456789ABCDEF";
-    auto encoded = std::string {};
-
-    for (auto character: text)
-    {
-        if (std::isalnum((unsigned char) character) != 0 || character == '-'
-            || character == '_' || character == '.' || character == '~')
-        {
-            encoded += character;
-            continue;
-        }
-
-        encoded += '%';
-        encoded += digits[(unsigned char) character >> 4];
-        encoded += digits[(unsigned char) character & 0xf];
-    }
-
-    return encoded;
-}
-
 std::string apiRoot(const Options& options)
 {
     auto root = options.api;
@@ -276,22 +251,6 @@ std::string indexUrl(const Options& options)
         url += "&filter=" + percentEncoded(options.filter);
 
     return url;
-}
-
-const Miro::Json::Value* field(const Miro::Json::Value& value, const char* key)
-{
-    if (!value.isObject())
-        return nullptr;
-
-    return Miro::Json::find(value.asObject(), key);
-}
-
-std::string stringField(const Miro::Json::Value& value, const char* key)
-{
-    const auto* found = field(value, key);
-
-    return found != nullptr && found->isString() ? found->asString()
-                                                 : std::string {};
 }
 
 // What this writes a pass as. The image pass keeps the shader's own id, so the
@@ -716,40 +675,6 @@ struct Session
     bool keyRefused = false;
 };
 } // namespace
-
-Reply httpGet(const std::string& url)
-{
-    auto request = eacp::HTTP::Request {url};
-    request.headers["User-Agent"] = "ShaderToyEACP corpus fetcher";
-
-    auto response = request.perform();
-
-    return {response.statusCode, response.content, response.error};
-}
-
-std::string today()
-{
-    auto now = std::chrono::system_clock::now();
-    auto days = std::chrono::floor<std::chrono::days>(now);
-    auto date = std::chrono::year_month_day {days};
-
-    auto text = std::to_string((int) date.year()) + "-";
-    text += (unsigned) date.month() < 10 ? "0" : "";
-    text += std::to_string((unsigned) date.month()) + "-";
-    text += (unsigned) date.day() < 10 ? "0" : "";
-
-    return text + std::to_string((unsigned) date.day());
-}
-
-void printNote(const std::string& text)
-{
-    std::cout << text << "\n";
-}
-
-void printWarning(const std::string& text)
-{
-    std::cerr << text << "\n";
-}
 
 Options parseOptions(const Vector<std::string>& arguments)
 {

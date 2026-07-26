@@ -1,9 +1,11 @@
+#include <shadertoy/Corpus/Dataset.h>
 #include <shadertoy/Corpus/Fetch.h>
 
 #include <cstdlib>
 #include <iostream>
 
-// Fetches Shadertoys by id into a directory the repository does not track.
+// Fills a directory the repository does not track with the shaders the coverage
+// tables are measured over, from either of the two places they come from.
 //
 // Shadertoy's default licence is CC BY-NC-SA 3.0 unless an author says
 // otherwise, and the non-commercial clause makes redistribution a real question
@@ -11,6 +13,12 @@
 // directory of files on the machine that measured them - which is also the only
 // shape that scales, since what the coverage table wants is thousands of
 // shaders and not the fifteen anyone would write by hand.
+//
+// --dataset is the other source and the one every number in the README came
+// from: a corpus somebody else already collected through that API and published
+// with the licences attached, served by an endpoint that wants no key. Without
+// it the input to the whole measurement would be the one thing this repository
+// cannot reproduce.
 //
 // This is a C++ tool rather than a script for the same reason everything else
 // here is: eacp already has an HTTP client and a JSON parser, so the fetcher
@@ -25,9 +33,11 @@ namespace
 void printUsage()
 {
     std::cout
-        << "Fetches Shadertoys by id, for the coverage report to measure.\n\n"
+        << "Fetches the Shadertoys the coverage report measures.\n\n"
         << "Usage:\n"
-        << "  shadertoy-fetch [<id>...]\n\n"
+        << "  shadertoy-fetch [<id>...]\n"
+        << "  shadertoy-fetch --dataset [<name>]\n\n"
+        << "From Shadertoy's own API, by id:\n\n"
         << "  --ids <file>     the list to read and to add discoveries to\n"
         << "                   (default: Corpus/ids.txt), used when no id is\n"
         << "                   given on the command line\n"
@@ -51,13 +61,69 @@ void printUsage()
         << ".quota and .refused beside the shaders.\n\n"
         << "Needs a key from https://www.shadertoy.com/myapps, in\n"
         << "SHADERTOY_API_KEY. Creating one there wants a Shadertoy account\n"
-        << "with Silver or Gold status. Then measure what came back:\n\n"
-        << "  shadertoy-transpile --report Corpus/External/*.glsl\n";
+        << "with Silver or Gold status.\n\n"
+        << "From a published dataset, whole, and with no key at all:\n\n"
+        << "  --dataset [<n>]  the dataset to pull (default:\n"
+        << "                   Vipitis/Shadereval-inputs, which is the corpus\n"
+        << "                   every count in the README is measured over)\n"
+        << "  --out <dir>      where the shaders go (default: Corpus/External)\n"
+        << "  --rows <n>       stop after n rows rather than taking the split\n"
+        << "  --config <name>  the dataset's config (default: default)\n"
+        << "  --split <name>   the split to read (default: test)\n"
+        << "  --server <url>   the endpoint to ask, for testing without the "
+           "site\n\n"
+        << "The id, the author and the licence come back beside each shader,\n"
+        << "and the licence is what decides whether one may be committed here\n"
+        << "or only measured - .licences beside the shaders is that record.\n\n"
+        << "Then measure what came back:\n\n"
+        << "  shadertoy-scan Corpus/External --register survivors.cmake\n";
+}
+
+int runDataset(const Corpus::Dataset::Options& options)
+{
+    return Corpus::Dataset::Fetcher {}.run(options).ok() ? 0 : 1;
+}
+
+int runApi(Corpus::Options options)
+{
+    const auto* key = std::getenv("SHADERTOY_API_KEY");
+
+    if (key == nullptr || *key == '\0')
+    {
+        std::cerr << "SHADERTOY_API_KEY is not set. Create an app at\n"
+                  << "https://www.shadertoy.com/myapps - which wants an account\n"
+                  << "with Silver or Gold status - and the API refuses an\n"
+                  << "unkeyed request.\n\n"
+                  << "Or take the corpus the tables here are measured over,\n"
+                  << "which wants no key:\n\n"
+                  << "  shadertoy-fetch --dataset\n";
+        return 1;
+    }
+
+    options.key = key;
+
+    return Corpus::Fetcher {}.run(options).ok() ? 0 : 1;
 }
 } // namespace
 
 int main(int argc, char* argv[])
 {
+    // Which of the two sources a run is asking for decides which option set the
+    // rest of the command line is read as, so the dataset's parse goes first
+    // and only its own answer is trusted when it says yes.
+    auto dataset = Corpus::Dataset::parseOptions(argc, argv);
+
+    if (dataset.requested || dataset.help)
+    {
+        if (!dataset.valid || dataset.help)
+        {
+            printUsage();
+            return dataset.help ? 0 : 1;
+        }
+
+        return runDataset(dataset);
+    }
+
     auto options = Corpus::parseOptions(argc, argv);
 
     if (!options.valid || options.help)
@@ -66,18 +132,5 @@ int main(int argc, char* argv[])
         return options.help ? 0 : 1;
     }
 
-    const auto* key = std::getenv("SHADERTOY_API_KEY");
-
-    if (key == nullptr || *key == '\0')
-    {
-        std::cerr << "SHADERTOY_API_KEY is not set. Create an app at\n"
-                  << "https://www.shadertoy.com/myapps - which wants an account\n"
-                  << "with Silver or Gold status - and the API refuses an\n"
-                  << "unkeyed request.\n";
-        return 1;
-    }
-
-    options.key = key;
-
-    return Corpus::Fetcher {}.run(options).ok() ? 0 : 1;
+    return runApi(options);
 }

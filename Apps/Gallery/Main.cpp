@@ -1,5 +1,7 @@
 #include <shadertoy/Runtime/ChannelImages.h>
 
+#include <iostream>
+
 #include <Basis.h>
 #include <Blanks.h>
 #include <Channels.h>
@@ -30,6 +32,14 @@
 #include <SdldyWN.h>
 #include <SftVXRc.h>
 #include <SsdVyWt.h>
+
+// The measured half, when the build was pointed at a directory of it with
+// -DSHADERTOY_EXTERNAL_CORPUS. It is one file written by shadertoy-scan
+// --register: the includes for every shader of a corpus that converted and
+// then compiled, and an X-macro naming them.
+#if __has_include(<ExternalCorpus.h>)
+#include <ExternalCorpus.h>
+#endif
 
 using namespace eacp;
 using namespace Shadertoy;
@@ -65,6 +75,40 @@ struct OnePass final : Showing
 {
     Program& image() override { return shader; }
 
+    Port shader;
+};
+
+// A port nobody wired up, which is what every shader of an external corpus is.
+// Each of the ones below declares exactly the channels its shader sampled, and
+// every declared texture is a binding the draw has to satisfy - but what the
+// page bound them to is not in the GLSL and not in the corpus. So they get a
+// generated image, and the frame is the shader's own arithmetic over something
+// rather than a draw missing a binding.
+//
+// The texture is declared before the program so it outlives every draw that
+// samples it, and bound after both are constructed, exactly as a hand-wired
+// entry does it.
+template <typename Port>
+struct Unwired final : Showing
+{
+    Unwired()
+    {
+        if constexpr (requires { shader.iChannel0; })
+            shader.iChannel0 = standIn;
+
+        if constexpr (requires { shader.iChannel1; })
+            shader.iChannel1 = standIn;
+
+        if constexpr (requires { shader.iChannel2; })
+            shader.iChannel2 = standIn;
+
+        if constexpr (requires { shader.iChannel3; })
+            shader.iChannel3 = standIn;
+    }
+
+    Program& image() override { return shader; }
+
+    GPU::Texture standIn = ChannelImages::bricks();
     Port shader;
 };
 
@@ -119,12 +163,40 @@ struct Entry
 {
     std::string name;
     std::function<OwningPointer<Showing>()> load;
+
+    // Whether this one is a shader the build guarantees or one a scan
+    // measured. It is on screen because the difference is the whole point of
+    // the layer this app is: a committed port that stops compiling fails this
+    // build, and an external one is a shader that converted, compiled, and has
+    // never been compared against the page it came from.
+    bool measured = false;
 };
 
 template <typename Port>
 Entry entryFor(std::string name)
 {
     return {std::move(name), [] { return makeOwned<OnePass<Port>>(); }};
+}
+
+// The measured half, and the reason it is a half rather than the whole list.
+//
+// The entries above are committed shaders, and this target compiling every one
+// of them is what makes a port that converts and will not build a failed build
+// rather than a line nobody reads. An external corpus cannot keep that rule:
+// most of it does not convert at all, so a build that insisted would never run.
+// What can be said about these is what shadertoy-scan measured - they converted
+// and a compiler took them - and that is a weaker claim kept deliberately
+// apart from the stronger one.
+void addExternalTo([[maybe_unused]] Vector<Entry>& entries)
+{
+#ifdef SHADERTOY_EXTERNAL_PORTS
+#define SHADERTOY_GALLERY_ENTRY(Port, label)                                        \
+    entries.add({label, [] { return makeOwned<Unwired<Ports::Port>>(); }, true});
+
+    SHADERTOY_EXTERNAL_PORTS(SHADERTOY_GALLERY_ENTRY)
+
+#undef SHADERTOY_GALLERY_ENTRY
+#endif
 }
 
 // Ordered as the stages that opened them, which is also roughly simplest
@@ -167,6 +239,8 @@ Vector<Entry> corpus()
     entries.add(entryFor<Ports::SctdfzN>("ctdfzN - Peace"));
     entries.add(entryFor<Ports::SdldyWN>("dldyWN - lf94"));
 
+    addExternalTo(entries);
+
     return entries;
 }
 
@@ -181,6 +255,22 @@ struct GalleryView final : ShaderView
     std::function<void(std::uint16_t)> onKey = [](std::uint16_t) {};
 };
 
+// What the list is made of, said once at startup, because the two halves are
+// different claims and the count of the second one is the thing stage 12 was
+// for. A build with no external corpus says so by reporting none.
+void announceCorpus(const Vector<Entry>& entries)
+{
+    auto measured = 0;
+
+    for (const auto& entry: entries)
+        measured += entry.measured ? 1 : 0;
+
+    std::cout << entries.size() << " shaders: " << (entries.size() - measured)
+              << " this repository holds and this build guarantees, " << measured
+              << " a scan measured.\n"
+              << "Arrows to walk them, space to restart." << std::endl;
+}
+
 struct MyApp
 {
     MyApp()
@@ -188,6 +278,7 @@ struct MyApp
         view.onKey = [this](std::uint16_t code) { handleKey(code); };
 
         window.setContentView(view);
+        announceCorpus(entries);
         announce();
         view.focus();
     }
@@ -221,8 +312,11 @@ struct MyApp
 
     void announce()
     {
+        const auto& entry = entries[index];
+
         window.setTitle(std::to_string(index + 1) + "/"
-                        + std::to_string(entries.size()) + "  " + entries[index].name
+                        + std::to_string(entries.size()) + "  " + entry.name
+                        + (entry.measured ? "  [measured]" : "")
                         + "  -  arrows to move, space to restart");
     }
 

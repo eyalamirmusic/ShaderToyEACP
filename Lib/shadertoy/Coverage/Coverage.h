@@ -34,6 +34,13 @@ struct Outcome
     std::string name;
     std::filesystem::path source;
 
+    // What to call this shader in front of a person: the first comment line of
+    // the source if it has one, which is where both fetchers put the id and the
+    // author, and the file's own stem otherwise. Nothing measures with it - it
+    // is for the one layer of validation that is a human looking at the frame,
+    // and knowing whose shader is on screen is most of what that layer needs.
+    std::string title;
+
     bool converted = false;
     Vector<std::string> gaps;
 
@@ -58,6 +65,11 @@ struct Options
     // handed, and keeping them is what makes a failure something to go and
     // look at rather than a line in a table.
     std::filesystem::path out = "scan";
+
+    // Where to write what survived, as CMake a build can include(). Empty means
+    // the scan only prints, which is what it did before there was anything that
+    // could consume the answer.
+    std::filesystem::path registerTo;
 
     // Compilers to run at once. The conversion is microseconds and the compile
     // is seconds, so this is the whole of the wall clock.
@@ -123,4 +135,24 @@ struct Report
 Report scan(const Options& options, const Compiler& compiler);
 
 void printReport(const Report& report, bool verbose);
+
+// What survived, written where a build can read it rather than left as a number
+// in a table. Two files, because two different things consume them: a CMake
+// list a target include()s to learn the names and the include path, and beside
+// the generated headers an X-macro over the whole set, which is the include
+// list and the entry table an app would otherwise hold by hand.
+//
+// It is also what makes the count checkable in the other direction. A
+// registration with as many entries as the table claims agree, or one of the
+// two is lying - and a gallery that fails to build is the second check on the
+// same claim, since a header that compiled alone still has to compile beside
+// ninety-four others.
+//
+// The registration says a shader converted and compiled. It does not say
+// anybody has looked at the frame, and the file it writes says so too.
+bool writeRegistration(const Report& report, const Options& options);
+
+// Where the X-macro over the survivors is written, which is inside `out`
+// because that is already the directory a consumer puts on its include path.
+std::filesystem::path tablePathFor(const Options& options);
 } // namespace Shadertoy::Coverage

@@ -44,6 +44,37 @@ bool isShader(const std::filesystem::path& path)
     return path.extension() == ".glsl";
 }
 
+// What to call a shader in front of a person. Both fetchers write the id and
+// the author into the first comment line, which is the one thing about a
+// converted shader that a struct name does not carry - and the layer of
+// validation this feeds is somebody walking through 95 frames wondering which
+// page to compare each one against.
+std::string titleOf(const std::filesystem::path& source, const std::string& text)
+{
+    auto first = text.find_first_not_of(" \t\r\n");
+
+    if (first == std::string::npos || text.compare(first, 2, "//") != 0)
+        return source.stem().string();
+
+    auto line = text.substr(first + 2, text.find('\n', first) - first - 2);
+    auto from = line.find_first_not_of(" \t");
+
+    if (from == std::string::npos)
+        return source.stem().string();
+
+    line = line.substr(from, line.find_last_not_of(" \t\r") + 1 - from);
+
+    // A comment is somebody's prose and this ends up inside a C++ string
+    // literal, so the two characters that would end it early come out.
+    auto clean = std::string {};
+
+    for (auto character: line)
+        if (character != '"' && character != '\\')
+            clean += character;
+
+    return clean.empty() ? source.stem().string() : clean;
+}
+
 // Everything to measure, from what the command line named: a directory stands
 // for the shaders in it, which is what makes this a scan of a corpus rather
 // than of a list.
@@ -111,16 +142,42 @@ Vector<Row> rank(const std::map<std::string, Row>& rows)
     return ordered;
 }
 
+// One struct name per source, and never the same one twice. A name is what the
+// generated header is called, so two shaders sharing one would have the second
+// overwrite the first and then be measured against it - a compile result
+// attributed to the wrong shader, which is the one failure a coverage table
+// cannot survive. Shadertoy ids are case-sensitive and these names are not:
+// `clGyWm` and `ClGyWm` are two shaders and one struct.
+Vector<std::string> namesFor(const Vector<std::filesystem::path>& sources)
+{
+    auto names = Vector<std::string> {};
+    auto taken = std::map<std::string, int> {};
+
+    for (const auto& source: sources)
+    {
+        auto name = structNameFor(source);
+        auto seen = ++taken[name];
+
+        names.add(seen == 1 ? name : name + "_" + std::to_string(seen));
+    }
+
+    return names;
+}
+
 Outcome measure(const std::filesystem::path& source,
+                const std::string& structName,
                 const std::filesystem::path& out,
                 const Compiler& compiler)
 {
     auto outcome = Outcome {};
 
     outcome.source = source;
-    outcome.name = structNameFor(source);
+    outcome.name = structName;
 
-    auto result = transpile(readFile(source), outcome.name);
+    auto text = readFile(source);
+    outcome.title = titleOf(source, text);
+
+    auto result = transpile(text, outcome.name);
     outcome.converted = result.ok();
 
     for (const auto& diagnostic: result.diagnostics)
@@ -260,6 +317,10 @@ Blame blame(const std::string& shape)
          "Invalid operands - a type inferred wrongly and carried into an "
          "operator",
          "transpiler"},
+        {"no viable overloaded",
+         "`no viable overloaded '='` - the same wrong type, one statement "
+         "later",
+         "transpiler"},
         {"variable declared with deduced type cannot appear in its own "
          "initializer",
          "`auto x = ... x ...` - a reassignment emitted as a declaration",
@@ -367,6 +428,7 @@ int Report::unblockedBy(const std::string& shape) const
 Report scan(const Options& options, const Compiler& compiler)
 {
     auto sources = shadersIn(options.inputs);
+    auto names = namesFor(sources);
     auto report = Report {};
 
     report.outcomes.resize(sources.size());
@@ -381,7 +443,8 @@ Report scan(const Options& options, const Compiler& compiler)
     auto work = [&]
     {
         for (auto index = next++; index < sources.size(); index = next++)
-            report.outcomes[index] = measure(sources[index], options.out, compiler);
+            report.outcomes[index] =
+                measure(sources[index], names[index], options.out, compiler);
     };
 
     auto workers = Vector<std::thread> {};
@@ -466,6 +529,116 @@ void printReport(const Report& report, bool verbose)
             std::cout << outcome.name << ": " << outcome.firstError << "\n";
 }
 
+std::filesystem::path tablePathFor(const Options& options)
+{
+    return std::filesystem::absolute(options.out) / "ExternalCorpus.h";
+}
+
+namespace
+{
+// The survivors, in the order a person would walk them rather than the order
+// the threads finished in.
+Vector<const Outcome*> survivorsOf(const Report& report)
+{
+    auto passed = Vector<const Outcome*> {};
+
+    for (const auto& outcome: report.outcomes)
+        if (outcome.passed())
+            passed.add(&outcome);
+
+    std::sort(passed.begin(),
+              passed.end(),
+              [](const Outcome* a, const Outcome* b) { return a->name < b->name; });
+
+    return passed;
+}
+
+void writeCMakeList(std::ostream& file,
+                    const Report& report,
+                    const Options& options,
+                    const Vector<const Outcome*>& passed)
+{
+    auto directory = std::filesystem::absolute(options.out);
+
+    file << "# Written by shadertoy-scan --register. Every shader named here\n"
+         << "# converted and then compiled, and that is the whole of what this\n"
+         << "# file claims: nobody has looked at any of these frames.\n"
+         << "#\n"
+         << "# " << passed.size() << " of " << report.outcomes.size()
+         << " shaders converted and compiled.\n"
+         << "#\n"
+         << "# include() this and the variables below are what a target needs.\n"
+         << "\n"
+         << "set(SHADERTOY_SURVIVOR_COUNT " << passed.size() << ")\n"
+         << "set(SHADERTOY_SURVIVOR_INCLUDE_DIR \"" << directory.generic_string()
+         << "\")\n"
+         << "set(SHADERTOY_SURVIVOR_TABLE \""
+         << tablePathFor(options).generic_string() << "\")\n\n"
+         << "set(SHADERTOY_SURVIVORS\n";
+
+    for (const auto* outcome: passed)
+        file << "        " << outcome->name << "\n";
+
+    file << ")\n\nset(SHADERTOY_SURVIVOR_HEADERS\n";
+
+    for (const auto* outcome: passed)
+        file << "        \"" << (directory / (outcome->name + ".h")).generic_string()
+             << "\"\n";
+
+    file << ")\n";
+}
+
+// The include list and the entry table, as an X-macro rather than as anything
+// that knows what an entry is. What a consumer does with a port is its own
+// business - the gallery makes one and shows it - and a generated file that
+// named a type would be a generated file that had to be kept in step with one.
+void writeTable(std::ostream& file,
+                const Report& report,
+                const Vector<const Outcome*>& passed)
+{
+    file << "#pragma once\n\n"
+         << "// Written by shadertoy-scan --register: every shader of a corpus\n"
+         << "// that converted and then compiled, " << passed.size() << " of "
+         << report.outcomes.size() << " of them.\n"
+         << "//\n"
+         << "// These are measured rather than guaranteed. The ports a target\n"
+         << "// holds by hand fail its build if one of them stops compiling,\n"
+         << "// which is why they are worth holding by hand; a corpus most of\n"
+         << "// which does not convert cannot keep that rule, so this is the\n"
+         << "// half of a gallery that is a measurement and not a promise.\n\n";
+
+    for (const auto* outcome: passed)
+        file << "#include <" << outcome->name << ".h>\n";
+
+    file << "\n#define SHADERTOY_EXTERNAL_PORT_COUNT " << passed.size() << "\n"
+         << "\n// X(port, label) once per survivor, so that a consumer says\n"
+         << "// what an entry is and this says only which ones there are.\n"
+         << "#define SHADERTOY_EXTERNAL_PORTS(X)";
+
+    for (const auto* outcome: passed)
+        file << " \\\n    X(" << outcome->name << ", \"" << outcome->title << "\")";
+
+    file << "\n";
+}
+} // namespace
+
+bool writeRegistration(const Report& report, const Options& options)
+{
+    auto passed = survivorsOf(report);
+
+    auto listPath = options.registerTo;
+    auto list = std::ofstream(listPath);
+    auto table = std::ofstream(tablePathFor(options));
+
+    if (!list || !table)
+        return false;
+
+    writeCMakeList(list, report, options, passed);
+    writeTable(table, report, passed);
+
+    return list.good() && table.good();
+}
+
 Options parseOptions(int argc, char* argv[])
 {
     auto options = Options {};
@@ -480,6 +653,8 @@ Options parseOptions(int argc, char* argv[])
             options.verbose = true;
         else if (argument == "--out" && index + 1 < argc)
             options.out = argv[++index];
+        else if (argument == "--register" && index + 1 < argc)
+            options.registerTo = argv[++index];
         else if (argument == "--jobs" && index + 1 < argc)
             options.jobs = (int) std::strtol(argv[++index], nullptr, 10);
         else if (argument.rfind('-', 0) == 0)
