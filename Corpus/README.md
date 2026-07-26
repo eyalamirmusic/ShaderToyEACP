@@ -38,6 +38,14 @@ inside a helper the port has to inline around it; the escape-time loop adds a
 colour written by both sides of an `if`/`else` and read after it, and a ternary
 over two comparisons joined by a connective. `Apps/MarchPort` runs the first.
 
-`Palette.glsl` is the one that still walks into a wall, which is what keeps the
-coverage table from being an empty measurement: an array, the integer index into
-it, and the mask that keeps the index in range.
+`Palette.glsl` is stage 6's: a constant array, the integer index into it, and
+the mask that keeps the index in range. It was the one shader that still walked
+into a wall until that stage closed it, and it is rendered back by
+`Tests/Runtime/ArrayTests` — an array read at a computed index compiles and
+reports nothing whether or not the index actually varies, so a frame is what
+says which element each pixel got.
+
+`Lattice.glsl` is the one that walks into a wall now, which is what keeps the
+coverage table from being an empty measurement. It is the vector half of the row
+stage 6 closed the scalar half of: an `ivec2` cell, a componentwise comparison,
+and the `bvec2` it yields with no `any()`/`all()` to collapse it.

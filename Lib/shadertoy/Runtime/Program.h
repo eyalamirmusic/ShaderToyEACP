@@ -107,9 +107,10 @@ private:
 // eacp ShaderProgram: it walks the uniform members and then calls define(),
 // which reaches mainImage through the vtable.
 //
-// The uniforms keep Shadertoy's names, so a ported body reads the same as the
-// GLSL it came from. Two deviations, both because the EDSL has no integer value
-// type usable in float arithmetic yet: iFrame is a float, and iDate is absent.
+// The uniforms keep Shadertoy's names and Shadertoy's types, so a ported body
+// reads the same as the GLSL it came from - iFrame included, which is an int on
+// the page and an Int here. One deviation is left: iDate is absent, which is a
+// clock this runtime does not have rather than a type the EDSL is missing.
 //
 // Texture channels are not declared here. A port declares the ones it samples
 // and no others, because every declared texture becomes a binding the draw has
@@ -124,7 +125,7 @@ public:
     GPU::Uniform<GPU::Float3> iResolution; // viewport size in pixels, then 1
     GPU::Uniform<GPU::Float> iTime; // seconds since the shader started
     GPU::Uniform<GPU::Float> iTimeDelta; // seconds the previous frame took
-    GPU::Uniform<GPU::Float> iFrame; // frames drawn since the start
+    GPU::Uniform<GPU::Int> iFrame; // frames drawn since the start
     GPU::Uniform<GPU::Float4> iMouse; // xy = pointer, zw = click (see below)
 
     // Uploads the fullscreen triangle and builds the pipeline. sampleCount comes

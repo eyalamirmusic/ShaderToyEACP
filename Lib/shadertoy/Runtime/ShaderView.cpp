@@ -44,7 +44,7 @@ void ShaderView::render(GPU::Frame& frame)
     program.iResolution = {bounds.w * scale, bounds.h * scale, 1.0f};
     program.iTime = (float) elapsed;
     program.iTimeDelta = (float) frameDelta;
-    program.iFrame = (float) frameIndex;
+    program.iFrame = frameIndex;
     program.iMouse = {pointer[0], pointer[1], click[0], click[1]};
 
     auto pass = frame.beginPass({backgroundColor});

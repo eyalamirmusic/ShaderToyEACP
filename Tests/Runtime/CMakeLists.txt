@@ -1,6 +1,7 @@
 nano_add_executable(RuntimeTests
         NO_MAIN
         SOURCES
+            ArrayTests.cpp
             ChannelTests.cpp
             ControlFlowTests.cpp
             ProgramTests.cpp
@@ -29,3 +30,7 @@ shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Chan
 # the escape-time loop with the rest of the statement vocabulary around it.
 shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Raymarch.glsl NAME Raymarch)
 shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Mandelbrot.glsl NAME Mandelbrot)
+
+# Stage 6: the constant array, the integer that indexes it and the mask that
+# holds the index in range.
+shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Palette.glsl NAME Palette)

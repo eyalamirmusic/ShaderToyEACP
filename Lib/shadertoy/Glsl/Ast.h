@@ -13,7 +13,10 @@ enum class ExprKind
     Call, // text = the callee, args = the arguments
     Member, // text = the components, args = {object}
     Ternary, // args = {condition, whenTrue, whenFalse}
-    Index // args = {object, index}
+    Index, // args = {object, index}
+    ArrayLiteral // text = the element type, args = the elements. GLSL spells an
+    // array's contents as a constructor - `vec3[4](a, b, c, d)` - so this is a
+    // call in the grammar and a value everywhere after it.
 };
 
 enum class StatementKind
@@ -58,6 +61,11 @@ struct Statement
     int step = -1;
     int body = -1;
     int elseBody = -1;
+
+    // `vec3 palette[4] = ...` - the declaration is of an array. Its size is the
+    // number of elements the initialiser has, so the one in the brackets is
+    // parsed and dropped: the two cannot disagree if only one of them is read.
+    bool isArray = false;
 
     // Whether the port has to declare this local as a mutable variable rather
     // than binding it once. Set after lowering, by the pass that finds the

@@ -192,6 +192,7 @@ private:
 
             case ExprKind::Member:
             case ExprKind::Index:
+            case ExprKind::ArrayLiteral:
                 return false;
         }
 
@@ -844,17 +845,51 @@ private:
         into.add(std::move(jump));
     }
 
+    // A constant array survives lowering as itself: there is nothing to fold it
+    // into, and the EDSL has an array to lower it to. Its elements are lowered
+    // like any other expression, so a palette spelled through a #define still
+    // arrives as numbers.
+    void lowerArrayDeclare(const Statement& statement, Vector<Statement>& into)
+    {
+        if (statement.value < 0)
+        {
+            report(DiagnosticKind::UnsupportedType, "array without an initialiser");
+            return;
+        }
+
+        auto value = lowerExpression(statement.value, into);
+        auto emitted = unique(statement.name);
+
+        auto declaration =
+            Statement {StatementKind::Declare, emitted, statement.type};
+        declaration.isArray = true;
+        declaration.value = value;
+        declaration.line = statement.line;
+        into.add(std::move(declaration));
+
+        auto binding = Binding {};
+        binding.node = identifier(emitted);
+        bind(statement.name, binding);
+    }
+
     void lowerDeclare(const Statement& statement, Vector<Statement>& into)
     {
+        if (statement.isArray)
+        {
+            lowerArrayDeclare(statement, into);
+            return;
+        }
+
         auto binding = Binding {};
         binding.isConstant = fold(statement.value, binding.value, true);
         auto type = statement.type;
 
         if (isIntegerType(type))
         {
-            // An integer local that is a constant has no reason to exist in the
-            // port: substituting its value is what keeps `int` off the gap
-            // list, since the EDSL has no integer type to lower it to.
+            // An integer local that is a constant is still substituted rather
+            // than declared: that is what keeps an ordinary loop counter out of
+            // the port entirely, and it is the readable thing to do whether or
+            // not the EDSL has an integer to fall back on.
             if (binding.isConstant && keepingCounters == 0)
             {
                 binding.node = number(binding.value);
@@ -862,14 +897,19 @@ private:
                 return;
             }
 
-            // The counter of a loop the port kept is the exception: it has to
-            // survive as something the body can step, and a float counts
-            // exactly far past any trip count a shader has. Everywhere else an
-            // integer that will not fold is still the gap it was.
-            if (keepingCounters == 0)
+            // An `int` that will not fold is now an int - the counter of a loop
+            // the port kept included. Counting in the type the shader wrote is
+            // what keeps the rest of it consistent: GLSL will not compare an
+            // int with a float either, so a bound spelled `int(iTime)` and a
+            // counter spelled `i` agree in the port exactly where they agreed
+            // in the source, and every crossing between the two vocabularies is
+            // one the shader already wrote out.
+            //
+            // A `uint` is still the gap it was: the EDSL's unsigned type is the
+            // compute thread id and the buffer index computed from it, and
+            // nothing in a fragment shader reaches it.
+            if (type == "uint")
                 report(DiagnosticKind::UnsupportedType, type);
-            else
-                type = "float";
         }
 
         auto value = lowerExpression(statement.value, into);

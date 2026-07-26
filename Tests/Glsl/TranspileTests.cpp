@@ -317,23 +317,21 @@ auto tDynamicLoop = test("Glsl/dynamicLoopBecomesALoop") = []
     check(contains(result.code, "t = t() + 1.0f;"));
 };
 
-// The counter of a loop the port kept is a float. The EDSL has no integer
-// value, and one stepped by a literal and compared counts exactly far past any
-// trip count a shader has - which is the same reason iFrame is a float.
-auto tIntegerCounter = test("Glsl/integerCounterBecomesAFloat") = []
+// The counter of a loop the port kept counts in the type the shader wrote it
+// in. Both sides of its header have to agree, and here the bound is a
+// truncation of a uniform - so a float counter would be comparing across the
+// two vocabularies, which neither GLSL nor the EDSL will do.
+auto tIntegerCounter = test("Glsl/integerCounterStaysAnInteger") = []
 {
     auto result = convert("    float total = 0.0;\n"
                           "    for (int i = 0; i < int(iTime); i++)\n"
                           "        total += 1.0;\n"
                           "    fragColor = vec4(total, 0.0, 0.0, 1.0);");
 
-    check(countOf(result, Glsl::DiagnosticKind::ControlFlow) == 0);
-    check(contains(result.code, "auto i = var(0.0f);"));
-    check(contains(result.code, "i = i() + 1.0f;"));
-
-    // The bound is what is left: converting a float to an integer truncates,
-    // and the EDSL has neither the type nor the intrinsic to say so.
-    check(reports(result, Glsl::DiagnosticKind::UnsupportedType, "int"));
+    check(result.ok());
+    check(contains(result.code, "auto i = var(0);"));
+    check(contains(result.code, "loop(i() < toInt(iTime), [&]"));
+    check(contains(result.code, "i = i() + 1;"));
 };
 
 // A while is the loop with nothing to unroll at all, and it lowers to the same
@@ -389,7 +387,7 @@ auto tLoopWithBreak = test("Glsl/loopWithBreakIsNotUnrolled") = []
                           "    fragColor = vec4(d, 0.0, 0.0, 1.0);");
 
     check(result.ok());
-    check(contains(result.code, "loop(i() < 8.0f, [&]"));
+    check(contains(result.code, "loop(i() < 8, [&]"));
     check(contains(result.code, "breakLoop();"));
 
     // Once, not eight times.
@@ -411,7 +409,7 @@ auto tContinueRunsTheStep = test("Glsl/continueRunsTheStep") = []
 
     check(result.ok());
     check(contains(result.code, "continueLoop();"));
-    check(countOccurrences(result.code, "i = i() + 1.0f;") == 2);
+    check(countOccurrences(result.code, "i = i() + 1;") == 2);
 };
 
 // A branch is a statement, and each side records into a body of its own.
@@ -507,6 +505,112 @@ auto tBoolLocals = test("Glsl/boolLocalsConvert") = []
     check(contains(result.code, "auto hit = var(boolean(false));"));
     check(contains(result.code, "hit = boolean(true);"));
     check(contains(result.code, "select(hit()"));
+};
+
+// An integer local that will not fold is an integer, and so is every literal
+// standing beside it: `index & 3` needs a 3, while the truncation it was built
+// from still needs its 4.0f. Where a literal sits is what decides which it is.
+auto tIntegerLocals = test("Glsl/integerLocalsConvert") = []
+{
+    auto result =
+        convert("    vec2 uv = fragCoord / iResolution.xy;\n"
+                "    int index = int(uv.x * 4.0) & 3;\n"
+                "    int mixed = (index << 2 | index >> 1) ^ ~index;\n"
+                "    fragColor = vec4(float(mixed % 5) * 0.2, 0.0, 0.0, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "auto index = toInt(uv.x() * 4.0f) & 3;"));
+    check(contains(result.code, "auto mixed = (index << 2 | index >> 1) ^ ~index;"));
+    check(contains(result.code, "toFloat(mixed % 5) * 0.2f"));
+};
+
+// iFrame is an int on the Shadertoy page, and now an Int in the port: it was a
+// float only for as long as there was nothing else for it to be. A shader
+// cycling on the frame count is the shape that cared.
+auto tFrameCounterIsAnInteger = test("Glsl/frameCounterIsAnInteger") = []
+{
+    auto result = convert("    float phase = float(iFrame % 120) / 120.0;\n"
+                          "    fragColor = vec4(phase, 0.0, 0.0, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "auto phase = toFloat(iFrame % 120) / 120.0f;"));
+};
+
+// A `uint` is still the gap it was - the EDSL's unsigned type belongs to a
+// compute kernel - and so does every operator reached over floats, which is
+// what keeps the report honest about what the integer type did and did not buy.
+auto tIntegerGaps = test("Glsl/integerGapsReported") = []
+{
+    auto unsignedLocal =
+        convert("    uint bits = uint(iTime) + 1u;\n"
+                "    fragColor = vec4(float(bits), 0.0, 0.0, 1.0);");
+
+    check(reports(unsignedLocal, Glsl::DiagnosticKind::UnsupportedType, "uint"));
+
+    auto overFloats = convert("    float t = iTime * 8.0;\n"
+                              "    fragColor = vec4(t % 3.0, 0.0, 0.0, 1.0);");
+
+    check(reports(overFloats, Glsl::DiagnosticKind::UnsupportedType, "int %"));
+};
+
+// A constant array is one declaration and one subscript, which is the whole of
+// what a palette needs. The index is an integer, so the literal in it is one.
+auto tConstantArray = test("Glsl/constantArrayConverts") = []
+{
+    auto result = transpile("const vec3 tint[3] = vec3[3](vec3(1.0, 0.0, 0.0),\n"
+                            "                             vec3(0.0, 1.0, 0.0),\n"
+                            "                             vec3(0.0, 0.0, 1.0));\n"
+                            "void mainImage(out vec4 fragColor, in vec2 fragCoord)\n"
+                            "{\n"
+                            "    int index = int(fragCoord.x) % 3;\n"
+                            "    fragColor = vec4(tint[index] + tint[0], 1.0);\n"
+                            "}\n",
+                            "TestShader");
+
+    check(result.ok());
+    check(contains(result.code, "auto tint = array(float3(constant(1.0f)"));
+    check(contains(result.code, "tint[index] + tint[0]"));
+
+    // The size in the brackets is dropped on both sides, so the two spellings
+    // of it cannot disagree.
+    check(!contains(result.code, "[3]"));
+};
+
+// A struct is a capability, so it is named as one. It is also the shape that
+// used to hang the parser outright: recovery skips to a semicolon and stops at
+// a closing brace without consuming it, so the brace a struct body leaves
+// behind was reported, skipped to, and reported again forever. A shader that
+// converts to nothing is a row in the table; one that never returns is not.
+auto tStructIsReported = test("Glsl/structIsReportedAndTerminates") = []
+{
+    auto result = transpile("struct Hit\n"
+                            "{\n"
+                            "    float distance;\n"
+                            "    vec3 albedo;\n"
+                            "};\n"
+                            "void mainImage(out vec4 fragColor, in vec2 fragCoord)\n"
+                            "{\n"
+                            "    fragColor = vec4(fragCoord, 0.0, 1.0);\n"
+                            "}\n",
+                            "TestShader");
+
+    check(reports(result, Glsl::DiagnosticKind::UnsupportedType, "struct"));
+
+    // The struct is the only thing wrong with it: skipping one has to leave the
+    // parser where the next declaration starts, not adrift in what it skipped.
+    check(countOf(result, Glsl::DiagnosticKind::ParseError) == 0);
+    check(contains(result.code, "auto fragColor = float4(fragCoord, 0.0f, 1.0f);"));
+};
+
+// A subscript of something the port never declared as an array is the gap it
+// was: iChannelResolution is the one a Shadertoy reads without declaring, and
+// it needs no array type because only a literal ever indexes it.
+auto tSubscriptGap = test("Glsl/nonArraySubscriptIsReported") = []
+{
+    auto result = convert("    mat2 m = mat2(1.0, 0.0, 0.0, 1.0);\n"
+                          "    fragColor = vec4(m[0], 0.0, 1.0);");
+
+    check(reports(result, Glsl::DiagnosticKind::UnsupportedType, "indexing"));
 };
 
 // A return that is not the last thing a body does leaves early, which a ported

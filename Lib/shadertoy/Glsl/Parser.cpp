@@ -147,6 +147,7 @@ private:
             {"&"},
             {"==", "!="},
             {"<", ">", "<=", ">="},
+            {"<<", ">>"},
             {"+", "-"},
             {"*", "/", "%"},
         };
@@ -249,6 +250,11 @@ private:
         {
             advance();
 
+            // `vec3[4](a, b, c, d)` - GLSL's array constructor, and the only
+            // way a shader spells what is in one.
+            if (isTypeName(token.text) && check("["))
+                return parseArrayLiteral(token.text);
+
             if (!match("("))
                 return shader.add(Expr {ExprKind::Identifier, token.text});
 
@@ -276,6 +282,33 @@ private:
         report(DiagnosticKind::ParseError, "unexpected '" + token.text + "'");
         advance();
         return shader.add(Expr {ExprKind::Number, "0.0"});
+    }
+
+    // The size in the brackets is parsed and dropped: it is redundant with the
+    // element count, GLSL lets it be left out entirely (`vec3[](...)`), and two
+    // sources for one number is one more than the port can use.
+    int parseArrayLiteral(const std::string& elementType)
+    {
+        expect("[");
+
+        if (!check("]"))
+            parseExpression();
+
+        expect("]");
+        expect("(");
+
+        auto node = Expr {ExprKind::ArrayLiteral, elementType};
+
+        if (!check(")"))
+        {
+            do
+            {
+                node.args.add(parseExpression());
+            } while (match(","));
+        }
+
+        expect(")");
+        return shader.add(std::move(node));
     }
 
     int literalOne()
@@ -398,11 +431,16 @@ private:
             statement.line = peek().line;
             statement.name = advance().text;
 
-            if (check("["))
+            // `vec3 palette[4]`. The size is dropped here for the same reason
+            // it is in the constructor: the initialiser already carries it.
+            if (match("["))
             {
-                report(DiagnosticKind::UnsupportedType, "array");
-                skipToSemicolon();
-                return;
+                statement.isArray = true;
+
+                if (!check("]"))
+                    parseExpression();
+
+                expect("]");
             }
 
             if (match("="))
@@ -835,6 +873,19 @@ private:
                 continue;
             }
 
+            // A struct is a capability the EDSL does not have, so it is named
+            // as one rather than left to come out as a parse error - and it is
+            // skipped whole, brace body and trailing declarator included.
+            if (check("struct"))
+            {
+                report(DiagnosticKind::UnsupportedType, "struct");
+                advance();
+                advance();
+                skipBalanced("{", "}");
+                skipToSemicolon();
+                continue;
+            }
+
             auto isFunction =
                 peek().isIdentifier() && peek(1).isIdentifier() && peek(2).is("(");
 
@@ -858,7 +909,16 @@ private:
             }
 
             report(DiagnosticKind::ParseError, "unexpected '" + peek().text + "'");
+
+            auto before = position;
             skipToSemicolon();
+
+            // Recovery has to move. skipToSemicolon stops at a closing brace
+            // without consuming it, so a stray one at the top level - what a
+            // construct with a body leaves behind when it is skipped from the
+            // wrong place - would otherwise be reported forever.
+            if (position == before)
+                advance();
         }
 
         if (!shader.hasMainImage)

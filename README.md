@@ -11,13 +11,13 @@ a matter of opinion into a measurement. Every shader that fails to convert names
 a specific gap, and the number of shaders blocked on each gap is what decides
 which one to close next.
 
-> **⚠️ Early days.** Stages 0 to 5 are done: straight-line GLSL converts,
+> **⚠️ Early days.** Stages 0 to 6 are done: straight-line GLSL converts,
 > constant-trip-count loops unroll, helper functions inline, the intrinsic and
-> swizzle gaps are closed, texture channels are sampled, and the EDSL now has
-> real control flow — mutable locals, `if`/`else`, `while`, `break`, `continue`
-> and `select` — so a raymarcher with a data-dependent break converts, compiles
-> and renders. Multi-buffer Shadertoys are still ahead — see the plan and the
-> coverage table below.
+> swizzle gaps are closed, texture channels are sampled, the EDSL has real
+> control flow — mutable locals, `if`/`else`, `while`, `break`, `continue` and
+> `select` — and it now has a signed integer, the operators only integers have,
+> and a constant array to subscript with one. Multi-buffer Shadertoys are still
+> ahead — see the plan and the coverage table below.
 
 ## Why this works better than it looks like it should
 
@@ -69,7 +69,8 @@ Apps/MarchPort/           a converted port that marches a loop with a break
 Tests/Glsl/               lowering and diagnostics
 Tests/Runtime/            vertex layout, uniform block layout, generated stages,
                           corpus ports compiled from their GLSL by the build, and
-                          rendered read-back of a bound channel and of a loop
+                          rendered read-back of a bound channel, of a loop, and
+                          of an array read at an index the pixel computed
 ```
 
 A port looks like this — hand-written or generated, the shape is the same:
@@ -93,9 +94,10 @@ struct PlasmaShader final : Shadertoy::Program
 ```
 
 `fragCoord` arrives in pixels with the origin at the bottom-left, exactly as
-Shadertoy hands it over. Two deviations from the real uniform set, both because
-the EDSL has no integer type usable in float arithmetic yet: `iFrame` is a float,
-and `iDate` is absent.
+Shadertoy hands it over, and the uniforms keep the page's types as well as its
+names — `iFrame` included, which is an `int` on both sides since stage 6. One
+deviation is left: `iDate` is absent, which is a clock this runtime does not
+have rather than a type the EDSL is missing.
 
 A port that reads a texture channel declares the ones it reads and no others,
 since every declared texture is a binding the draw has to satisfy:
@@ -142,6 +144,24 @@ loop(steps() < 64.0f, [&]
 `travelled()` is the read, spelled out rather than left to the implicit
 conversion, so the difference between a bound handle and a place stays visible
 in the source — which is also how the transpiler emits it.
+
+A port that picks out of a table declares the array and subscripts it, and the
+integer that indexes it is a value like any other — with the two crossings into
+and out of float arithmetic written out, exactly as the GLSL had to write them:
+
+```cpp
+auto palette = array(float3(constant(0.1f), 0.1f, 0.2f),
+                     float3(constant(0.9f), 0.4f, 0.2f),
+                     float3(constant(0.2f), 0.8f, 0.6f),
+                     float3(constant(1.0f), 0.9f, 0.7f));
+
+auto index = toInt(uv.x() * 4.0f) & 3;
+auto col = palette[index] * (0.5f + 0.5f * sin(iTime));
+```
+
+The array's size is its type, so a literal subscript is checked where it is
+written; a computed one is the shader's own business, as it is in GLSL, which is
+what the `& 3` is for.
 
 ## The plan
 
@@ -243,10 +263,24 @@ declare, because a C++ handle rebound inside a lambda is a new handle that dies
 at the closing brace. Everything else stays a plain binding, so an unrolled
 shader reads exactly as it did.
 
-**Stage 6 — multi-buffer Shadertoys.** *Next.* Buffer A–D with feedback, which
-needs render-to-texture and float texture formats in eacp. The integer type the
-corpus is now asking for — an array index, and the operators only integers have
-— is the other thing the table is pointing at.
+**Stage 6 — the integer and the array.** *Done.* `Int`, the operators only
+integers have (`%`, `&`, `|`, `^`, `<<`, `>>`, `~`), the comparisons, `min`/
+`max`/`abs`, the two explicit crossings `toInt`/`toFloat`, and a constant
+`Array<T, N>` with a subscript — driven by the one shader the table still had a
+row for, which wanted all four at once.
+
+The integer is signed, which is the part that had to be decided rather than
+copied: eacp already had a `UInt` for the compute thread id, and indexing an
+array with it is the obvious move and the wrong one. See below.
+
+This is also the stage that took the last type deviation out of the uniform set:
+`iFrame` was a float because there was nothing else for it to be, and is an
+`int` on both sides now.
+
+**Stage 7 — multi-buffer Shadertoys.** *Next.* Buffer A–D with feedback, which
+needs render-to-texture and float texture formats in eacp. What the corpus is
+asking for beside it is the vector half of the row stage 6 closed the scalar
+half of — `ivec2`, and the componentwise comparison with no `bvec` to land in.
 
 ## Using it
 
@@ -288,30 +322,29 @@ build/Tools/Transpile/shadertoy-transpile --report Corpus/*.glsl \
 
 ## The coverage table
 
-Over the ten shaders in `Corpus/` plus `Apps/PlasmaPort/Plasma.glsl`, as of the
-end of stage 5. `Shaders` is the number blocked by that gap, which is what the
-roadmap is sorted by:
+Over the eleven shaders in `Corpus/` plus `Apps/PlasmaPort/Plasma.glsl`, as of
+the end of stage 6. `Shaders` is the number blocked by that gap, which is what
+the roadmap is sorted by:
 
 | Blocker | Shaders | Occurrences |
 | --- | ---: | ---: |
-| type: array | 1 | 1 |
-| type: indexing | 1 | 1 |
-| type: int | 1 | 1 |
-| type: int & | 1 | 1 |
-| unknown-identifier: palette | 1 | 1 |
+| type: bvec2 | 1 | 1 |
+| type: ivec2 | 1 | 1 |
+| user-function: all | 1 | 1 |
+| user-function: ivec2 | 1 | 1 |
+| user-function: lessThan | 1 | 1 |
 
-10 of 11 shaders converted with no gaps.
+11 of 12 shaders converted with no gaps.
 
-Every control-flow row is gone. `Raymarch.glsl` had four of them — three walls
-and the helper that hid behind them, since a loop that cannot be unrolled is a
-function that cannot be inlined — and now converts with nothing left over, as
-does the escape-time loop added beside it.
+Every integer and array row is gone. `Palette.glsl` had five of them — an array
+type, a subscript, an integer value and the operator only integers have, which
+is what one gap looks like when it is genuinely four things — and now converts,
+compiles and renders with nothing left over.
 
-What is left is one shader and one wall: `Palette.glsl` wants an array, the
-integer that indexes it, and the mask that keeps the index in range. Five rows
-from one shader, which is what a gap looks like when it is genuinely several
-things — an array type, a subscript, an integer value, and an operator only
-integers have.
+The remaining row is `Lattice.glsl`, added with this stage so the table is still
+measuring something: the vector half of what stage 6 closed the scalar half of.
+An `ivec2` cell, a componentwise `lessThan`, and the `bvec2` it yields with no
+`any()`/`all()` to collapse it — three ledger entries, one shader.
 
 `Kaleido.glsl` was added with stage 3 and is the shader that measures it: a
 `mat2` rotation built inline, polar coordinates through the two-argument `atan`,
@@ -330,10 +363,14 @@ over two comparisons joined by a connective. All of them convert with nothing
 left over, which is a claim only worth making because `Tests/Runtime` then
 compiles them — and renders three.
 
+`Palette.glsl` is stage 6's, and is the one that had been sitting in the table
+since stage 1: a constant array of four colours, an index truncated out of a
+coordinate, and the mask that holds it in range.
+
 The corpus is still far too small for these counts to rank anything. What it
 establishes is that the measurement works end to end — and it has now paid for
-itself three times, turning three assumptions into bugs in stage 3, three more
-in stage 4, and two in stage 5 before any of them shipped.
+itself four times over, turning three assumptions into bugs in stage 3, three
+more in stage 4, two in stage 5 and two in stage 6 before any of them shipped.
 
 ## What this has already changed in eacp
 
@@ -435,6 +472,38 @@ cbuffer gives it four. `ShaderBuilder::uniform<T>()` static_asserts it rather
 than leaving it to a comment; a flag from the CPU crosses as a `Float` and gets
 compared.
 
+**The integer a shader indexes with has to be signed** (stage 6). eacp already
+had a `UInt` — the compute thread id and the buffer index computed from it — so
+the cheap way to close the array row is to subscript with that one. It is also
+wrong, and wrong in a way nothing but a rendered frame reports: `int(uv.x * 4.0)`
+is negative to the left of the origin, and a shader that holds an index in range
+with `min(max(i, 0), 3)` gets the *first* element there if the index is signed
+and the *last* one if it wrapped to a huge number on the way in. Both compile,
+both report nothing, and they differ only in which end of the palette half the
+frame comes out. `Int` is therefore its own type, signed, sitting outside the
+float vocabulary exactly as `UInt` does — and unlike `Bool` and the small
+matrices it *can* be a uniform, since both languages give a signed integer four
+bytes and pack it where they pack a float. `Tests/Runtime/ArrayTests` renders
+the difference; `GPU/codegenIntegerUniform` pins the packing.
+
+**An operator that does not fit in a `char`** (stage 6). `Expr` carried a binary
+operator as one, which every arithmetic and bitwise operator fits in and the two
+shifts do not. `Compare` had already been split out for that reason plus its
+result type; a shift shares the first half of that and none of the second, since
+it is shaped like the value being shifted. So `Binary` now carries its operator
+in the node's text where a char cannot hold it, and the printer prefers the text
+when there is one.
+
+**An array is a declaration, not a value** (stage 6). It is the one thing a
+shader names that no single node stands for, so it lives beside the expression
+store rather than in it, and it is emitted as a `const` array at the top of the
+stage that subscripts it — in the fragment function only, when only the fragment
+expression reads it. That placement is also what bounds an element: it may read
+a uniform or a varying, both of which are in scope there, and not a mutable
+local, because no local has been declared yet at that point. A subscript is an
+ordinary node under the emitter's sharing rule, so a table read twice at one
+index is read once and named.
+
 Stage 3 also found a bug on this side of the fence rather than in eacp: the
 emitter's line-wrapping path rebuilt a call's head from the *GLSL* name, so a
 wrapped `inversesqrt` came back as `inversesqrt` instead of `rsqrt`. It had
@@ -448,6 +517,18 @@ ignored. So a `for` with a `break` unrolled sixty-four times and dropped the
 break on every copy. It converted, it compiled, and it was wrong. That is the
 failure mode `Tests/Runtime/ControlFlowTests` exists for.
 
+Stage 6 found two more here. The first is that a literal has no type of its own:
+`index & 3` needs a `3` and the `int(uv.x * 4.0)` it was built from still needs
+its `4.0f`, and the same AST node kind carries both — so which one a number is
+spelled as is decided by where it sits, walked once per statement before that
+statement is emitted. The second is a hang rather than a wrong answer: recovery
+from a construct the parser cannot keep skips to a semicolon and stops at a
+closing brace *without consuming it*, so the brace a `struct` body leaves behind
+was reported, skipped to, and reported again forever. A `struct` is now named as
+the capability it is and skipped whole, and top-level recovery asserts that it
+moved. Found while measuring what the corpus asks for next, which is the other
+thing the measurement is for.
+
 ## The gap ledger
 
 What eacp's EDSL cannot express today, from reading the module — the standing
@@ -455,7 +536,8 @@ list the table above is gradually replacing with measured counts.
 
 | Blocker | Where it lives in eacp |
 | --- | --- |
-| No `int`/`ivec`, no arrays or structs | `ShaderTypes.h` |
+| No `ivec`/`bvec` and no structs — the scalar `Int` and the constant array are there, the vectors of either and the aggregate are not | `ShaderTypes.h` |
+| An array is constant: its elements are evaluated once at the top of the shader body, so one can read a uniform or a varying but not a mutable local, and nothing writes to an element afterwards | `ShaderGraph.h` — `ArrayConstant` |
 | Control flow is fragment-stage (or kernel) only: the statement list is emitted into the fragment function, so a `Var` must not feed the position or a varying — as with `dfdx` and sampling, which are fragment-bound in the language too | `ShaderEmitter.cpp` |
 | No `do`/`while`-at-the-bottom and no `switch`; no early `return` from a shader body, which is one expression returned at the end | `ShaderGraph.h` — `StatementKind` |
 | A `Bool` cannot be a uniform: MSL packs one into a byte and an HLSL cbuffer into four. Send a `Float` and compare it | `UniformLayout.h` |
@@ -483,6 +565,12 @@ expression type, which is what a condition is. What is left of it is above: the
 loop forms neither shading language shares a shape for, the stage restriction,
 and the vector comparison with no type to land in.
 
+Closed by stage 6: the scalar half of the type row. `Int` — signed, a uniform as
+well as an expression — with `%`, `&`, `|`, `^`, `<<`, `>>`, `~`, the six
+comparisons, `min`/`max`/`abs` and the two explicit crossings to and from
+`Float`; and `Array<T, N>` with a subscript at a literal or a computed index.
+What is left of it is above: the integer and boolean *vectors*, and the struct.
+
 ## Validation
 
 Three layers, because they catch different things.
@@ -496,12 +584,13 @@ not take is a failing build rather than a clean report. This is what found the
 missing scalar broadcast above.
 
 **Rendered pixels.** *Started in stage 4, and load-bearing since stage 5.*
-`Tests/Runtime/ChannelTests` and `Tests/Runtime/ControlFlowTests` render a port
+`Tests/Runtime/ChannelTests`, `ControlFlowTests` and `ArrayTests` render a port
 off-screen through `View::renderToImage` and read the frame back. They exist
-because both stages are invisible to the other two layers: a channel that never
-reaches the draw compiles cleanly, reports nothing and renders black, and a loop
-that never runs, one that ignores its break and one that runs to completion all
-compile, all report nothing, and differ only in their pixels.
+because all three stages are invisible to the other two layers: a channel that
+never reaches the draw compiles cleanly, reports nothing and renders black; a
+loop that never runs, one that ignores its break and one that runs to completion
+all compile, all report nothing, and differ only in their pixels; and an array
+read at an index that never varies is a perfectly plausible flat colour.
 
 So each shader is built so its picture says which happened. Two texels — red
 then green — through a sampled channel, a fetched one and a transpiled port say
@@ -509,6 +598,13 @@ which texel each half of the frame got. A march that steps until it passes the
 pixel's own coordinate comes out a ramp; flat at either end would be a loop
 stuck there. And the generated `Raymarch` port has to be brighter in the middle
 than at the corner, which only a march that stops when it arrives can be.
+
+Stage 6's is the sharpest of them, because it is the only one where both
+outcomes are a picture rather than a picture and a blank: a four-colour palette
+subscripted by the pixel's own quarter comes out in four bands, and the same
+palette clamped over an index that really does go negative comes out the *first*
+colour on the left if the index is signed and the last one if it is not. Nothing
+short of the frame distinguishes those two.
 
 What is still ahead is the golden-image half of it: render at a fixed `iTime`
 and diff against a stored PNG within a tolerance, which is the layer that

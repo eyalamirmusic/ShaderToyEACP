@@ -17,6 +17,7 @@ enum class Type
 {
     Unknown,
     Bool, // what a comparison yields and a branch or a select tests
+    Int, // what subscripts an array, and what % and the bitwise set take
     Float,
     Vec2,
     Vec3,
@@ -24,9 +25,13 @@ enum class Type
     Mat2,
     Mat3,
     Mat4,
-    Channel // a texture channel, which is sampled rather than evaluated
+    Channel, // a texture channel, which is sampled rather than evaluated
+    Array // a constant array, whose element type is tracked beside the name
 };
 
+// How many components a value broadcasts across. Zero for everything that never
+// broadcasts, which is what keeps an Int from winning the widening rule below:
+// an integer beside a float is a type error in GLSL, not a conversion.
 int componentsOf(Type type)
 {
     switch (type)
@@ -40,10 +45,12 @@ int componentsOf(Type type)
         case Type::Vec4:
             return 4;
         case Type::Bool:
+        case Type::Int:
         case Type::Mat2:
         case Type::Mat3:
         case Type::Mat4:
         case Type::Channel:
+        case Type::Array:
         case Type::Unknown:
             return 0;
     }
@@ -89,6 +96,8 @@ Type typeFromGlslName(std::string_view name)
 {
     if (name == "bool")
         return Type::Bool;
+    if (name == "int")
+        return Type::Int;
     if (name == "float")
         return Type::Float;
     if (name == "vec2")
@@ -274,21 +283,34 @@ char canonicalComponent(char component)
 // clang-format wanting to reflow it.
 constexpr auto columnLimit = 85;
 
-// Zero for anything the port has no operator for - the bitwise set, which needs
-// the integer type rather than an operator - so emitBinary reports those
-// instead of spelling them.
+// Zero for an operator the port has no spelling for at all, so emitBinary
+// reports it rather than emitting it. The order is C++'s, which is GLSL's:
+// shifts below the additive operators, the bitwise set below equality and above
+// the connectives.
 int precedenceOf(const std::string& op)
 {
     if (op == "*" || op == "/" || op == "%")
-        return 6;
+        return 10;
 
     if (op == "+" || op == "-")
-        return 5;
+        return 9;
+
+    if (op == "<<" || op == ">>")
+        return 8;
 
     if (op == "<" || op == ">" || op == "<=" || op == ">=")
-        return 4;
+        return 7;
 
     if (op == "==" || op == "!=")
+        return 6;
+
+    if (op == "&")
+        return 5;
+
+    if (op == "^")
+        return 4;
+
+    if (op == "|")
         return 3;
 
     if (op == "&&")
@@ -304,8 +326,17 @@ int precedenceOf(const std::string& op)
 // operands.
 bool yieldsBool(const std::string& op)
 {
-    auto precedence = precedenceOf(op);
-    return precedence > 0 && precedence < 5;
+    return op == "<" || op == ">" || op == "<=" || op == ">=" || op == "=="
+           || op == "!=" || op == "&&" || op == "||";
+}
+
+// The operators GLSL defines on integers only. A shader reaching one over
+// floats needs the integer type rather than the operator - mod() is what a
+// float tiles with, and there is no float to take a complement of.
+bool integerOnly(const std::string& op)
+{
+    return op == "%" || op == "&" || op == "|" || op == "^" || op == "<<"
+           || op == ">>";
 }
 
 std::string floatLiteral(double value)
@@ -323,6 +354,15 @@ std::string floatLiteral(double value)
     return text + "f";
 }
 
+// A literal that sits beside an integer is spelled as one. GLSL truncates
+// towards zero on the way into an int and so does the EDSL, so a literal that
+// reached here with a fraction - from a fold, or from a shader that wrote 3.0
+// where it meant 3 - loses it the same way.
+std::string integerLiteral(double value)
+{
+    return std::to_string((long long) value);
+}
+
 class Emitter
 {
 public:
@@ -334,7 +374,7 @@ public:
         types["iResolution"] = Type::Vec3;
         types["iTime"] = Type::Float;
         types["iTimeDelta"] = Type::Float;
-        types["iFrame"] = Type::Float;
+        types["iFrame"] = Type::Int;
         types["iMouse"] = Type::Vec4;
 
         for (auto channel = 0; channel < channelCount; ++channel)
@@ -503,12 +543,31 @@ private:
         }
 
         wroteReturn = true;
+        markIntegers(statement.value, false);
         return layout(indent + "return ", statement.value, ";");
+    }
+
+    // A constant array is one declaration and one value: the EDSL takes its
+    // elements as a pack and its size from them, so the port says what the GLSL
+    // said with none of the repetition around it.
+    std::string emitArrayDeclare(const Statement& statement)
+    {
+        types[statement.name] = Type::Array;
+        arrayElements[statement.name] = typeFromGlslName(statement.type);
+
+        markIntegers(statement.value, false);
+
+        return layout(
+            indent + "auto " + statement.name + " = ", statement.value, ";");
     }
 
     std::string emitDeclare(const Statement& statement)
     {
+        if (statement.isArray)
+            return emitArrayDeclare(statement);
+
         auto declared = typeFromGlslName(statement.type);
+        markIntegers(statement.value, declared == Type::Int);
 
         if (statement.isVariable)
         {
@@ -545,6 +604,8 @@ private:
     // condition, then the body as a lambda recording into a block of its own.
     std::string emitBranch(const Statement& statement)
     {
+        markIntegers(statement.condition, false);
+
         auto text = layout(indent + "ifThen(", statement.condition, ", [&]");
         text += indent + "{\n" + emitBlock(statement.body) + indent + "}";
 
@@ -557,6 +618,8 @@ private:
 
     std::string emitLoop(const Statement& statement)
     {
+        markIntegers(statement.condition, false);
+
         auto text = layout(indent + "loop(", statement.condition, ", [&]");
         return text + indent + "{\n" + emitBlock(statement.body) + indent + "});\n";
     }
@@ -571,6 +634,7 @@ private:
                                         ? found->second
                                         : typeOf(statement.value);
             pending.erase(found);
+            markIntegers(statement.value, types[statement.name] == Type::Int);
 
             return layoutValue(
                 indent + "auto " + statement.name + " = ", statement.value, ";");
@@ -583,10 +647,13 @@ private:
             types[statement.name] = statement.name == shader.fragColor
                                         ? Type::Vec4
                                         : typeOf(statement.value);
+            markIntegers(statement.value, types[statement.name] == Type::Int);
 
             return layoutValue(
                 indent + "auto " + statement.name + " = ", statement.value, ";");
         }
+
+        markIntegers(statement.value, types[statement.name] == Type::Int);
 
         // `col += x` becomes `col = col + x`, with the right-hand side
         // parenthesised only where the compound operator would otherwise
@@ -625,6 +692,8 @@ private:
         {
             case Type::Bool:
                 return "false";
+            case Type::Int:
+                return "integer(0)";
             case Type::Float:
                 return "0.0f";
             case Type::Vec2:
@@ -702,9 +771,14 @@ private:
 
         // A ternary emits as select(condition, whenTrue, whenFalse) over the
         // three nodes it was parsed with, which is exactly the shape the call
-        // layout re-walks.
+        // layout re-walks - and an array literal is array(e0, e1, ...) over
+        // its elements, which is the same shape again. A palette is the one
+        // thing here that reliably runs long, so this is what it needs.
         if (expr.kind == ExprKind::Ternary)
             return layoutCall("select", expr, column, trailing, indent);
+
+        if (expr.kind == ExprKind::ArrayLiteral && !expr.args.empty())
+            return layoutCall("array", expr, column, trailing, indent);
 
         return single;
     }
@@ -900,10 +974,17 @@ private:
                 if (yieldsBool(expr.text))
                     return Type::Bool;
 
-                // A vector next to a scalar broadcasts, so the wider operand
-                // wins - which is also what the EDSL's operators do.
                 auto left = typeOf(expr.args[0]);
                 auto right = typeOf(expr.args[1]);
+
+                // An integer beside an integer literal is still an integer.
+                // GLSL has no implicit conversion between the two vocabularies
+                // and neither does the EDSL, so nothing here widens one.
+                if (left == Type::Int || right == Type::Int)
+                    return Type::Int;
+
+                // A vector next to a scalar broadcasts, so the wider operand
+                // wins - which is also what the EDSL's operators do.
                 return componentsOf(left) >= componentsOf(right) ? left : right;
             }
 
@@ -914,14 +995,41 @@ private:
                 return typeOfWidth((int) expr.text.size());
 
             case ExprKind::Index:
-                return channelResolutionIndex(expr) >= 0 ? Type::Vec3
-                                                         : Type::Unknown;
+                return typeOfIndex(expr);
+
+            case ExprKind::ArrayLiteral:
+                return Type::Array;
 
             case ExprKind::Call:
                 return typeOfCall(expr);
         }
 
         return Type::Unknown;
+    }
+
+    // What a subscript reads. iChannelResolution is the one array a Shadertoy
+    // indexes without declaring; everything else is a name the port declared as
+    // an array, and the element type is what it was declared with.
+    Type typeOfIndex(const Expr& expr)
+    {
+        if (channelResolutionIndex(expr) >= 0)
+            return Type::Vec3;
+
+        auto element = arrayElements.find(nameOfArray(expr));
+        return element != arrayElements.end() ? element->second : Type::Unknown;
+    }
+
+    // The name a subscript reads out of, empty when the object is not one the
+    // port declared as an array.
+    std::string nameOfArray(const Expr& expr) const
+    {
+        const auto& object = shader.expr(expr.args[0]);
+
+        if (object.kind != ExprKind::Identifier
+            || arrayElements.count(object.text) == 0)
+            return {};
+
+        return object.text;
     }
 
     Type typeOfCall(const Expr& expr)
@@ -963,6 +1071,99 @@ private:
         }
 
         return Type::Unknown;
+    }
+
+    // Which literals in a subtree are spelled as integers. Where a literal sits
+    // is what decides it, not the literal itself: `index & 3` needs a 3 and
+    // `int(uv.x * 4.0)` needs a 4.0f, and the same node kind carries both.
+    //
+    // Walked once per statement, immediately before that statement is emitted,
+    // because the types it reads are the ones the statements above it left
+    // behind. The result is a set of nodes rather than a flag threaded through
+    // emission, so the line-wrapping path - which re-walks the same nodes -
+    // reaches the same answer without knowing this exists.
+    void markIntegers(int node, bool integer)
+    {
+        if (node < 0)
+            return;
+
+        const auto& expr = shader.expr(node);
+
+        switch (expr.kind)
+        {
+            case ExprKind::Number:
+                if (integer)
+                    integerLiterals.insert(node);
+
+                return;
+
+            case ExprKind::Identifier:
+                return;
+
+            case ExprKind::Unary:
+                markIntegers(expr.args[0], typeOf(expr.args[0]) == Type::Int);
+                return;
+
+            case ExprKind::Binary:
+            {
+                // Either operand being an integer settles it for both, which is
+                // what puts the 3 in `index & 3` and in `3 & index` alike.
+                auto operands = integer || typeOf(expr.args[0]) == Type::Int
+                                || typeOf(expr.args[1]) == Type::Int;
+
+                markIntegers(expr.args[0], operands);
+                markIntegers(expr.args[1], operands);
+                return;
+            }
+
+            case ExprKind::Ternary:
+                markIntegers(expr.args[0], false);
+                markIntegers(expr.args[1], integer);
+                markIntegers(expr.args[2], integer);
+                return;
+
+            case ExprKind::Member:
+                markIntegers(expr.args[0], false);
+                return;
+
+            case ExprKind::Index:
+                markIntegers(expr.args[0], false);
+                markIntegers(expr.args[1], !nameOfArray(expr).empty());
+                return;
+
+            case ExprKind::ArrayLiteral:
+                for (auto argument: expr.args)
+                    markIntegers(argument, typeFromGlslName(expr.text) == Type::Int);
+
+                return;
+
+            case ExprKind::Call:
+            {
+                // A conversion's argument is in the other vocabulary by
+                // definition, which is the whole reason it is written.
+                auto arguments = !isConversion(expr.text) && takesIntegers(expr);
+
+                for (auto argument: expr.args)
+                    markIntegers(argument, arguments);
+
+                return;
+            }
+        }
+    }
+
+    static bool isConversion(const std::string& callee)
+    {
+        return callee == "int" || callee == "uint" || callee == "float"
+               || callee == "bool";
+    }
+
+    bool takesIntegers(const Expr& expr)
+    {
+        for (auto argument: expr.args)
+            if (typeOf(argument) == Type::Int)
+                return true;
+
+        return false;
     }
 
     // Whether a subtree mentions any name at all. An expression built only from
@@ -1034,7 +1235,8 @@ private:
         switch (expr.kind)
         {
             case ExprKind::Number:
-                return floatLiteral(expr.value);
+                return integerLiterals.count(node) != 0 ? integerLiteral(expr.value)
+                                                        : floatLiteral(expr.value);
 
             case ExprKind::Identifier:
                 return emitIdentifier(expr);
@@ -1057,6 +1259,9 @@ private:
 
             case ExprKind::Index:
                 return emitIndex(expr);
+
+            case ExprKind::ArrayLiteral:
+                return "array(" + emitArguments(expr) + ")";
 
             case ExprKind::Call:
                 return emitCall(node, expr);
@@ -1114,6 +1319,13 @@ private:
             return "iChannel" + std::to_string(channel) + ".resolution";
         }
 
+        // A subscript of a name the port declared as an array is the EDSL's
+        // own, so it is spelled exactly as the GLSL wrote it. Anything else -
+        // a matrix column, a swizzle written as an index - is the gap it was.
+        if (!nameOfArray(expr).empty())
+            return emitExpression(expr.args[0]) + "[" + emitExpression(expr.args[1])
+                   + "]";
+
         report(DiagnosticKind::UnsupportedType, "indexing");
         return "/* unsupported: [] */ (" + emitExpression(expr.args[0]) + ")";
     }
@@ -1132,8 +1344,10 @@ private:
         if (expr.text == "!")
             return "!(" + operand + ")";
 
-        // What is left is `~`, the bitwise complement, which needs the integer
-        // type rather than an operator.
+        // What is left is `~`, the one unary operator no float has.
+        if (expr.text == "~" && typeOf(expr.args[0]) == Type::Int)
+            return compound ? "~(" + operand + ")" : "~" + operand;
+
         report(DiagnosticKind::UnsupportedType, "int " + expr.text);
         return "/* unsupported: " + expr.text + " */ (" + operand + ")";
     }
@@ -1144,7 +1358,13 @@ private:
         auto left = emitOperand(expr.args[0], precedence, false);
         auto right = emitOperand(expr.args[1], precedence, true);
 
-        if (precedenceOf(expr.text) > 0 && expr.text != "%")
+        // %, the bitwise set and the shifts are defined on integers only, so a
+        // shader reaching one over floats needs the integer type rather than
+        // the operator - mod() is what a float tiles with.
+        auto integer =
+            typeOf(expr.args[0]) == Type::Int || typeOf(expr.args[1]) == Type::Int;
+
+        if (precedence > 0 && (integer || !integerOnly(expr.text)))
         {
             // GLSL reads `vector * matrix` as the row vector on the left, which
             // is the transposed product - a different value from the matrix *
@@ -1159,9 +1379,6 @@ private:
             return left + " " + expr.text + " " + right;
         }
 
-        // GLSL defines % and the bitwise operators on integers only, so what a
-        // shader reaching one needs is the integer type, not the operator -
-        // mod() is spelled for floats.
         report(DiagnosticKind::UnsupportedType, "int " + expr.text);
         return "/* unsupported: " + expr.text + " */ (" + left + ")";
     }
@@ -1201,20 +1418,36 @@ private:
             return emitVectorConstructor(node, expr, width);
 
         // `float(x)` is a conversion, and after unrolling has substituted the
-        // counter it is usually a conversion of a literal. The parentheses stay
-        // where dropping them would re-bind the expression around it.
+        // counter it is usually a conversion of a literal. Over a float it is
+        // the identity, and the parentheses stay where dropping them would
+        // re-bind the expression around it; over an integer it is the crossing
+        // between the two vocabularies, which the EDSL spells out.
         if (expr.text == "float" && expr.args.size() == 1)
         {
             auto inner = emitExpression(expr.args[0]);
+
+            if (typeOf(expr.args[0]) == Type::Int)
+                return "toFloat(" + inner + ")";
+
             auto grouped = shader.expr(expr.args[0]).kind == ExprKind::Binary
                            || shader.expr(expr.args[0]).kind == ExprKind::Ternary;
 
             return grouped ? "(" + inner + ")" : inner;
         }
 
-        // An integer conversion truncates, and the EDSL has neither the type nor
-        // the intrinsic to say so.
-        if (expr.text == "int" || expr.text == "uint" || expr.text == "bool")
+        // And the crossing the other way, which truncates towards zero in the
+        // EDSL exactly as it does in GLSL. Over something already an integer it
+        // is the identity, the way float() is over a float.
+        if (expr.text == "int" && expr.args.size() == 1)
+        {
+            auto inner = emitExpression(expr.args[0]);
+            return typeOf(expr.args[0]) == Type::Int ? inner
+                                                     : "toInt(" + inner + ")";
+        }
+
+        // `uint` has no fragment-stage counterpart - the EDSL's unsigned type is
+        // the compute thread id - and `bool(x)` has no spelling at all.
+        if (expr.text == "uint" || expr.text == "bool")
         {
             report(DiagnosticKind::UnsupportedType, expr.text);
             return "/* unsupported: " + expr.text + " */ " + emitArguments(expr);
@@ -1486,7 +1719,13 @@ private:
 
     std::map<std::string, Type> types;
     std::map<std::string, Type> pending;
+
+    // The element type of every name declared as a constant array, which is
+    // what a subscript of it reads and what the array's own type does not say.
+    std::map<std::string, Type> arrayElements;
+
     std::set<std::string> variables; // the locals declared with var()
+    std::set<int> integerLiterals; // the numbers spelled 3 rather than 3.0f
     std::set<int> channelsUsed;
     Vector<Diagnostic> diagnostics;
 

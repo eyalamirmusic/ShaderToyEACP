@@ -5,6 +5,7 @@
 #include <Fbm.h>
 #include <Kaleido.h>
 #include <Mandelbrot.h>
+#include <Palette.h>
 #include <Raymarch.h>
 #include <Tunnel.h>
 #include <Voronoi.h>
@@ -175,4 +176,30 @@ auto tMandelbrotPortCompiles = test("Ports/escapeTimeLoopAndBranches") = []
     check(contains(source.source, "else"));
     check(contains(source.source, " ? "));
     check(contains(source.source, " && "));
+};
+
+// The wall the corpus was still walking into: an array, the integer that
+// indexes it, and the mask that holds the index in range. All four elements
+// reach the emitted source, the subscript reads the array the port declared,
+// and the truncation and the mask are spelled on the integer rather than
+// approximated on a float.
+auto tPalettePortCompiles = test("Ports/readsAConstantArray") = []
+{
+    auto shader = Shadertoy::Ports::Palette {};
+    const auto& source = shader.source();
+
+    check(!source.source.empty());
+    check(contains(source.source, "const float3 a0[4] = {"));
+    check(contains(source.source, "a0["));
+    check(contains(source.source, "int("));
+    check(contains(source.source, " & 3)"));
+
+    // One declaration, in the one stage that reads it.
+    auto declarations = std::size_t {0};
+
+    for (auto at = source.source.find("a0[4]"); at != std::string::npos;
+         at = source.source.find("a0[4]", at + 1))
+        ++declarations;
+
+    check(declarations == 1);
 };
