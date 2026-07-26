@@ -16,10 +16,11 @@ which one to close next.
 > swizzle gaps are closed, texture channels are sampled, the EDSL has real
 > control flow — mutable locals, `if`/`else`, `while`, `break`, `continue` and
 > `select` — it has a signed integer, the operators only integers have, and a
-> constant array to subscript with one, and now the vectors of both the integer
-> and the boolean, with the componentwise comparison that is the only thing a
-> boolean vector is ever made of. Multi-buffer Shadertoys are still ahead — see
-> the plan and the coverage table below.
+> constant array to subscript with one, and the vectors of both the integer and
+> the boolean, with the componentwise comparison that is the only thing a
+> boolean vector is ever made of. Stage 8 has taken the last row off the table:
+> the struct, which turned out not to be a gap in the EDSL at all. Multi-buffer
+> Shadertoys are what is left of it — see the plan and the coverage table below.
 
 ## Why this works better than it looks like it should
 
@@ -57,7 +58,8 @@ by asking the author.
 ```
 Lib/shadertoy/Glsl/       lexer, parser, AST, diagnostics  (no GPU dependency)
                           Lower (unrolling, inlining, constant folding,
-                          statements, and which locals become variables)
+                          statements, scalarising structs, and which locals
+                          become variables)
 Lib/shadertoy/Emit/       the AST -> C++ EDSL emitter
 Lib/shadertoy/Runtime/    Program (the Shadertoy uniform set + fullscreen pass)
                           Channel (a texture and the size published beside it)
@@ -72,8 +74,9 @@ Tests/Glsl/               lowering and diagnostics
 Tests/Runtime/            vertex layout, uniform block layout, generated stages,
                           corpus ports compiled from their GLSL by the build, and
                           rendered read-back of a bound channel, of a loop, of an
-                          array read at an index the pixel computed, and of a
-                          grid counted in integers behind a componentwise test
+                          array read at an index the pixel computed, of a grid
+                          counted in integers behind a componentwise test, and
+                          of a struct carried out of a loop a field at a time
 ```
 
 A port looks like this — hand-written or generated, the shape is the same:
@@ -184,6 +187,29 @@ turn a mask back into the single condition a `select` or an `ifThen` takes.
 GLSL spells the comparison `lessThan(a, b)` because it reserves the operator for
 scalars — the transpiler rewrites it into the operator, since that is what the
 languages underneath actually have.
+
+A port that carries more than one thing back from a hit declares nothing new for
+it. GLSL needs a struct there; C++ already has one, and the EDSL is embedded in
+C++ — so a hand port writes the aggregate and a generated one does not need to:
+
+```cpp
+struct Hit
+{
+    GPU::Float distance;
+    GPU::Float3 albedo;
+};
+
+Hit scene(const GPU::Float3& p)
+{
+    return {length(p) - 1.0f, float3(constant(0.9f), 0.4f, 0.2f)};
+}
+```
+
+The transpiler takes the other road, because it has already flattened every
+scope into one by the time it gets there: `Hit hit` becomes `hit_distance` and
+`hit_albedo`, and each is a local — or a `var`, if a loop writes it — exactly as
+if the shader had spelled the two out. Either way nothing about the aggregate
+reaches the graph, which is why it was never a gap in it.
 
 ## The plan
 
@@ -313,10 +339,19 @@ families crosses from the CPU.
 It also gave a texel read the type it had been asking for since stage 4:
 `fetch()` takes an `Int2`, which is what a texel index is.
 
-**Stage 8 — multi-buffer Shadertoys.** *Next.* Buffer A–D with feedback, which
-needs render-to-texture and float texture formats in eacp. What the corpus is
-asking for beside it is the last of the type row: the struct, which is how a
-shader that marches a scene carries back more than one thing from a hit.
+**Stage 8 — the aggregate, and multi-buffer Shadertoys.** *Half done.* The
+struct is the half that is finished, and it is the one stage so far that eacp
+needed nothing for: a GLSL struct scalarises into one local per field, which is
+the same argument that already made a GLSL helper cost nothing, one level up.
+Declaration, constructor, whole assignment, field read and field write, a struct
+through a parameter and back out of an `out` one, a struct with a struct inside
+it, and a ternary choosing between two — all of it is lowering, and none of it
+reaches the emitter. See below for why that is a finding rather than a shortcut.
+
+What is left is multi-buffer: Buffer A–D with feedback, which needs
+render-to-texture and float texture formats in eacp. That is the first thing the
+corpus cannot ask for on its own — the transpiler takes one file — so it is also
+what has to come next for the measurement to keep measuring anything.
 
 ## Using it
 
@@ -358,28 +393,23 @@ build/Tools/Transpile/shadertoy-transpile --report Corpus/*.glsl \
 
 ## The coverage table
 
-Over the twelve shaders in `Corpus/` plus `Apps/PlasmaPort/Plasma.glsl`, as of
-the end of stage 7. `Shaders` is the number blocked by that gap, which is what
-the roadmap is sorted by:
+Over the thirteen shaders in `Corpus/` plus `Apps/PlasmaPort/Plasma.glsl`, as of
+the struct half of stage 8. `Shaders` is the number blocked by that gap, which is
+what the roadmap is sorted by:
 
 | Blocker | Shaders | Occurrences |
 | --- | ---: | ---: |
-| type: struct | 1 | 1 |
 
-12 of 13 shaders converted with no gaps.
+14 of 14 shaders converted with no gaps.
 
-Every vector row is gone. `Lattice.glsl` had five of them — an `ivec2` cell, the
-componentwise `lessThan`, the `bvec2` it yields and the `all()` that collapses
-one, which is what one gap looks like when it is genuinely three things — and
-now converts, compiles and renders with nothing left over.
+The table is empty, which is the first time it has been and is not the good news
+it looks like: a measurement that has stopped measuring anything is a corpus that
+has run out of things to say, not an EDSL that has run out of gaps. Growing it is
+what multi-buffer is for — every Shadertoy that feeds a pass back into itself is
+a shader this corpus cannot even hold today, since the transpiler takes one file.
 
-The remaining row is `Surface.glsl`, added with this stage so the table is still
-measuring something: a raymarcher whose scene function hands back how far away
-the surface was *and* what it was made of, which in GLSL is a struct and in the
-EDSL is nothing at all — every value it names is one node, so a pair of them has
-nowhere to live.
-
-That it is one row rather than six is itself this stage's doing — see below.
+The row that came off it was `Surface.glsl`'s, and it came off without eacp
+changing at all — see below, because that is the interesting part.
 
 `Kaleido.glsl` was added with stage 3 and is the shader that measures it: a
 `mat2` rotation built inline, polar coordinates through the two-argument `atan`,
@@ -407,11 +437,18 @@ checker taken from the parity of its two components, and a box test that
 compares the coordinate against the resolution one component at a time and
 collapses what that yields with `all()`.
 
+`Surface.glsl` and `Facets.glsl` are stage 8's. The first is the shader the
+table had a row for: a raymarcher whose scene function hands back how far away
+the surface was *and* what it was made of, written together inside the loop and
+read after it. The second is the rest of the aggregate — a struct with a struct
+inside it, passed to a helper and handed back from one, and a ternary choosing
+between two whole values of it.
+
 The corpus is still far too small for these counts to rank anything. What it
 establishes is that the measurement works end to end — and it has now paid for
-itself five times over, turning three assumptions into bugs in stage 3, three
+itself six times over, turning three assumptions into bugs in stage 3, three
 more in stage 4, two in stage 5, two in stage 6 and three in stage 7 before any
-of them shipped.
+of them shipped, and in stage 8 correcting the ledger about where a gap even was.
 
 ## What this has already changed in eacp
 
@@ -587,6 +624,34 @@ coordinate already is one. The `Float2` form stays, because a shader usually has
 the coordinate in hand as one and truncating it is exactly what the `ivec2`
 conversion would have done.
 
+**The aggregate was never a gap in the EDSL** (stage 8). The ledger below had
+carried a `No structs` row against `ShaderTypes.h` since the beginning, and the
+obvious way to close it is a `ValueType::Struct`: a field list in the graph, an
+offset per field, a struct declaration emitted into both shading languages, and
+a `Var` that assigns through one. All of that is buildable and none of it is
+needed. eacp's EDSL is embedded in C++, and C++ already has an aggregate — a
+port that wants one writes `struct Hit { GPU::Float distance; GPU::Float3
+albedo; };` and it works today, because a struct of handles is a struct of
+handles. That is the same argument that already made a GLSL *helper* cost
+nothing, one level up: a C++ function over handles is the function, and a C++
+struct over handles is the struct.
+
+What the transpiler then owes is the renaming, which it was already doing. A
+struct-typed local becomes one local per field — `hit.albedo` is a name with a
+dot in it, and `hit_albedo` is the same name spelled the way C++ takes one — and
+a nested struct flattens through the path that reaches it. Nothing crosses a
+boundary that would need a type: the fields are `Float`s and `Float3`s, which
+the EDSL has had all along. So the diagnostic that used to say `type: struct`
+now says nothing at all, and the one gap that survives is the honest remainder —
+an array of structs, which really would need an array per leaf and a subscript
+that agreed across all of them.
+
+The measurement is what settled this rather than an opinion about it, and the
+correction runs the other way from every entry above: the ledger was not
+understating what eacp was missing, it was naming a capability in the wrong
+column. A row that says the EDSL cannot do something it can is worse than a
+missing row, because it is the one the roadmap would have been sorted by.
+
 Stage 3 also found a bug on this side of the fence rather than in eacp: the
 emitter's line-wrapping path rebuilt a call's head from the *GLSL* name, so a
 wrapped `inversesqrt` came back as `inversesqrt` instead of `rsqrt`. It had
@@ -631,7 +696,8 @@ list the table above is gradually replacing with measured counts.
 
 | Blocker | Where it lives in eacp |
 | --- | --- |
-| No structs — the scalars, their vectors and the constant array are all there, the aggregate is not: every value the EDSL names is one node, so a pair of them has nowhere to live | `ShaderTypes.h` |
+| No array of aggregates — a struct of handles is a C++ struct and needs nothing from the EDSL, but an array of one would need an array per field and a subscript that agreed across all of them, which no single `ArrayConstant` node says | `ShaderGraph.h` — `ArrayConstant` |
+| A struct cannot be a uniform, for the same reason `mat2` and `bool` cannot: what the two languages disagree about is the packing *inside* the value, which the block's pad scalars cannot correct. Send the fields | `UniformLayout.h` |
 | An array is constant: its elements are evaluated once at the top of the shader body, so one can read a uniform or a varying but not a mutable local, and nothing writes to an element afterwards | `ShaderGraph.h` — `ArrayConstant` |
 | Control flow is fragment-stage (or kernel) only: the statement list is emitted into the fragment function, so a `Var` must not feed the position or a varying — as with `dfdx` and sampling, which are fragment-bound in the language too | `ShaderEmitter.cpp` |
 | No `do`/`while`-at-the-bottom and no `switch`; no early `return` from a shader body, which is one expression returned at the end | `ShaderGraph.h` — `StatementKind` |
@@ -670,8 +736,12 @@ componentwise and against a broadcast scalar, `Bool2`/`Bool3`/`Bool4`, the six
 comparisons on two vectors of either family, `any()`/`all()` and the vector
 `!`, constructors and swizzles for both, and `toInt`/`toFloat` over a whole
 vector. An integer vector is a uniform as well as an expression; a boolean one
-is not, for the reason the scalar `Bool` is not. What is left of the type row is
-above: the struct.
+is not, for the reason the scalar `Bool` is not.
+
+Struck out by stage 8: the aggregate row, which was never eacp's to close. A
+struct of handles is a C++ struct, and the transpiler scalarises a GLSL one into
+the fields the EDSL always had. What replaced it above is what is actually true
+— no array of aggregates, and no aggregate uniform.
 
 ## Validation
 
@@ -686,9 +756,10 @@ not take is a failing build rather than a clean report. This is what found the
 missing scalar broadcast above.
 
 **Rendered pixels.** *Started in stage 4, and load-bearing since stage 5.*
-`Tests/Runtime/ChannelTests`, `ControlFlowTests`, `ArrayTests` and `VectorTests`
-render a port off-screen through `View::renderToImage` and read the frame back.
-They exist because all four stages are invisible to the other two layers: a
+`Tests/Runtime/ChannelTests`, `ControlFlowTests`, `ArrayTests`, `VectorTests`
+and `StructTests` render a port off-screen through `View::renderToImage` and
+read the frame back. They exist because all five stages are invisible to the
+other two layers: a
 channel that never reaches the draw compiles cleanly, reports nothing and
 renders black; a loop that never runs, one that ignores its break and one that
 runs to completion all compile, all report nothing, and differ only in their
@@ -712,8 +783,17 @@ colour on the left if the index is signed and the last one if it is not. Nothing
 short of the frame distinguishes those two.
 
 Stage 7's are the same shape: a checkerboard, whose cells exist only because the
-coordinate truncated into them, and one lit quarter rather than three. Each
-check is written as a fraction of the frame rather than as a pixel count,
+coordinate truncated into them, and one lit quarter rather than three.
+
+Stage 8's is the only one where the check is an *ordering* rather than a value,
+which is what makes it independent of whatever transfer function the frame comes
+back through: the albedo a march carries out of its loop has components
+0.9 > 0.4 > 0.2, and nothing but the albedo leaf landing in the albedo slot puts
+the three channels in that order — a frame shaded by the distance leaf instead
+comes out grey. Beside it, two candidates that differ in every field at once say
+whether a choice between two whole structs was made per field or once.
+
+Each check is written as a fraction of the frame rather than as a pixel count,
 because a view renders at the display's backing scale and the image read back is
 in points — a shader dividing `fragCoord` by a literal has more cells on a
 retina display than on a plain one, and it is the same picture either way.

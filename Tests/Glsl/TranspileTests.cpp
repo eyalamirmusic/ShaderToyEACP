@@ -637,52 +637,177 @@ auto tVectorGaps = test("Glsl/unsignedVectorsReported") = []
     check(reports(result, Glsl::DiagnosticKind::UnsupportedType, "uvec2"));
 };
 
-// A struct is a capability, so it is named as one. It is also the shape that
-// used to hang the parser outright: recovery skips to a semicolon and stops at
-// a closing brace without consuming it, so the brace a struct body leaves
-// behind was reported, skipped to, and reported again forever. A shader that
-// converts to nothing is a row in the table; one that never returns is not.
-auto tStructIsReported = test("Glsl/structIsReportedAndTerminates") = []
+namespace
 {
-    auto result = transpile("struct Hit\n"
-                            "{\n"
-                            "    float distance;\n"
-                            "    vec3 albedo;\n"
-                            "};\n"
-                            "void mainImage(out vec4 fragColor, in vec2 fragCoord)\n"
-                            "{\n"
-                            "    fragColor = vec4(fragCoord, 0.0, 1.0);\n"
-                            "}\n",
-                            "TestShader");
+// Wraps a body in a struct declaration and the mainImage signature, which is
+// the shape every one of the struct tests below takes.
+TranspileResult convertWithHit(const std::string& body)
+{
+    return transpile("struct Hit\n"
+                     "{\n"
+                     "    float distance;\n"
+                     "    vec3 albedo;\n"
+                     "};\n"
+                         + body,
+                     "TestShader");
+}
+} // namespace
 
-    check(reports(result, Glsl::DiagnosticKind::UnsupportedType, "struct"));
+// A struct is not a capability the EDSL is missing after all: it is a name for
+// its fields, and lowering already renames every local into one flat scope. So
+// one becomes a local per field and nothing about it reaches the emitter.
+//
+// It is also the shape that used to hang the parser outright, which the second
+// half of this pins: recovery skips to a semicolon and stops at a closing brace
+// without consuming it, so the brace a struct body leaves behind was reported,
+// skipped to, and reported again forever.
+auto tStructScalarises = test("Glsl/structScalarisesIntoItsFields") = []
+{
+    auto result =
+        convertWithHit("void mainImage(out vec4 fragColor, in vec2 fragCoord)\n"
+                       "{\n"
+                       "    Hit hit = Hit(fragCoord.x, vec3(1.0, 0.0, 0.0));\n"
+                       "    fragColor = vec4(hit.albedo * hit.distance, 1.0);\n"
+                       "}\n");
 
-    // The struct is the only thing wrong with it: skipping one has to leave the
-    // parser where the next declaration starts, not adrift in what it skipped.
-    check(countOf(result, Glsl::DiagnosticKind::ParseError) == 0);
-    check(contains(result.code, "auto fragColor = float4(fragCoord, 0.0f, 1.0f);"));
+    check(result.diagnostics.empty());
+    check(contains(result.code, "auto hit_distance = fragCoord.x();"));
+    check(contains(result.code, "auto hit_albedo = float3(constant(1.0f), 0.0f,"));
+    check(contains(result.code, "float4(hit_albedo * hit_distance, 1.0f)"));
 
-    // And a shader that goes on to use one still names the aggregate once,
-    // rather than the parse error, mystery call and pair of false swizzles that
-    // a value of a type nothing knows about otherwise scatters over every line
-    // that touches it. What is counted is the capability, so it has to be the
-    // capability that is reported.
-    auto used = transpile("struct Hit\n"
-                          "{\n"
-                          "    float distance;\n"
-                          "    vec3 albedo;\n"
-                          "};\n"
-                          "void mainImage(out vec4 fragColor, in vec2 fragCoord)\n"
-                          "{\n"
-                          "    Hit hit = Hit(fragCoord.x, vec3(1.0, 0.0, 0.0));\n"
-                          "    fragColor = vec4(hit.albedo * hit.distance, 1.0);\n"
-                          "}\n",
-                          "TestShader");
+    // No aggregate reaches the generated file - the type is gone with the
+    // grammar that spelled it.
+    check(!contains(result.code, "Hit"));
 
-    check(countOf(used, Glsl::DiagnosticKind::UnsupportedType) == 1);
-    check(countOf(used, Glsl::DiagnosticKind::ParseError) == 0);
-    check(countOf(used, Glsl::DiagnosticKind::UserFunction) == 0);
-    check(countOf(used, Glsl::DiagnosticKind::UnsupportedSwizzle) == 0);
+    auto empty =
+        convertWithHit("void mainImage(out vec4 fragColor, in vec2 fragCoord)\n"
+                       "{\n"
+                       "    fragColor = vec4(fragCoord, 0.0, 1.0);\n"
+                       "}\n");
+
+    check(countOf(empty, Glsl::DiagnosticKind::ParseError) == 0);
+    check(contains(empty.code, "auto fragColor = float4(fragCoord, 0.0f, 1.0f);"));
+};
+
+// A struct written inside a loop and read after it needs each of its fields to
+// be a variable, for exactly the reason one field on its own would: a C++ handle
+// rebound inside a lambda is a new handle that dies at the closing brace. The
+// pass that decides that runs on the scalarised output, so it needs to know
+// nothing about aggregates to get this right.
+auto tStructEscapesALoop = test("Glsl/structFieldsEscapeALoopSeparately") = []
+{
+    auto result =
+        convertWithHit("Hit scene(vec3 p)\n"
+                       "{\n"
+                       "    return Hit(length(p) - 1.0, vec3(0.9, 0.4, 0.2));\n"
+                       "}\n"
+                       "void mainImage(out vec4 fragColor, in vec2 fragCoord)\n"
+                       "{\n"
+                       "    float travelled = 0.0;\n"
+                       "    Hit hit = scene(vec3(0.0));\n"
+                       "    while (travelled < 8.0)\n"
+                       "    {\n"
+                       "        hit = scene(vec3(fragCoord, travelled));\n"
+                       "        if (hit.distance < 0.001)\n"
+                       "            break;\n"
+                       "        travelled += hit.distance;\n"
+                       "    }\n"
+                       "    fragColor = vec4(hit.albedo, 1.0);\n"
+                       "}\n");
+
+    check(result.diagnostics.empty());
+    check(contains(result.code, "auto hit_distance = var("));
+    check(contains(result.code, "auto hit_albedo = var("));
+
+    // And both are written where the loop wrote the struct, and read where the
+    // shading read it.
+    check(contains(result.code, "hit_distance = length("));
+    check(contains(result.code, "hit_albedo = float3("));
+    check(contains(result.code, "float4(hit_albedo(), 1.0f)"));
+};
+
+// Writing to one field is an assignment to a local like any other once the
+// struct is scalarised, and it must not come out as the component write the
+// EDSL genuinely has no spelling for. The two are told apart by what sits at
+// the root of the path, which is the only thing that distinguishes them.
+auto tStructFieldWrite = test("Glsl/structFieldWriteIsNotAComponentWrite") = []
+{
+    auto result =
+        convertWithHit("void mainImage(out vec4 fragColor, in vec2 fragCoord)\n"
+                       "{\n"
+                       "    Hit hit = Hit(0.0, vec3(0.0));\n"
+                       "    hit.distance = fragCoord.x;\n"
+                       "    hit.albedo = vec3(1.0, 0.5, 0.0);\n"
+                       "    fragColor = vec4(hit.albedo * hit.distance, 1.0);\n"
+                       "}\n");
+
+    check(result.diagnostics.empty());
+    check(contains(result.code, "hit_distance = fragCoord.x();"));
+
+    // A component of a vector still is one, and still says so.
+    auto component = convert("    vec3 col = vec3(0.0);\n"
+                             "    col.x = 1.0;\n"
+                             "    fragColor = vec4(col, 1.0);");
+
+    check(reports(component, Glsl::DiagnosticKind::ComponentAssignment, ".x"));
+};
+
+// A struct through an out parameter, which is the write-back path a field at a
+// time. Every field the helper left something in has to arrive back at the
+// caller's own local, or the shader reads what it had before the call.
+auto tStructOutParameter = test("Glsl/structWritesBackThroughAnOutParameter") = []
+{
+    auto result =
+        convertWithHit("void nearest(vec2 p, inout Hit best)\n"
+                       "{\n"
+                       "    best.distance = length(p);\n"
+                       "    best.albedo = vec3(p, 0.5);\n"
+                       "}\n"
+                       "void mainImage(out vec4 fragColor, in vec2 fragCoord)\n"
+                       "{\n"
+                       "    Hit best = Hit(1000.0, vec3(0.0));\n"
+                       "    nearest(fragCoord, best);\n"
+                       "    fragColor = vec4(best.albedo * best.distance, 1.0);\n"
+                       "}\n");
+
+    check(result.diagnostics.empty());
+    check(countOf(result, Glsl::DiagnosticKind::UserFunction) == 0);
+    check(contains(result.code, "best_distance = "));
+    check(contains(result.code, "best_albedo = "));
+    check(contains(result.code, "float4(best_albedo * best_distance, 1.0f)"));
+};
+
+// What is left of the aggregate once the fields are ordinary locals: an array
+// of them, which would need an array per leaf and a subscript that agreed
+// across all of them, and a struct holding an array, which has no single value
+// per field to become. Both name one capability rather than scattering the
+// fields they could not keep across every line that touches one.
+auto tStructGapsThatRemain = test("Glsl/theAggregateGapsThatRemain") = []
+{
+    auto array =
+        convertWithHit("void mainImage(out vec4 fragColor, in vec2 fragCoord)\n"
+                       "{\n"
+                       "    Hit hits[2];\n"
+                       "    fragColor = vec4(fragCoord, 0.0, 1.0);\n"
+                       "}\n");
+
+    check(reports(array, Glsl::DiagnosticKind::UnsupportedType, "array of structs"));
+    check(countOf(array, Glsl::DiagnosticKind::ParseError) == 0);
+
+    auto field = transpile("struct Table\n"
+                           "{\n"
+                           "    float weights[4];\n"
+                           "};\n"
+                           "void mainImage(out vec4 fragColor, in vec2 fragCoord)\n"
+                           "{\n"
+                           "    Table t = Table(fragCoord.x);\n"
+                           "    fragColor = vec4(fragCoord, 0.0, 1.0);\n"
+                           "}\n",
+                           "TestShader");
+
+    check(countOf(field, Glsl::DiagnosticKind::UnsupportedType) == 1);
+    check(reports(field, Glsl::DiagnosticKind::UnsupportedType, "struct"));
+    check(countOf(field, Glsl::DiagnosticKind::ParseError) == 0);
 };
 
 // A subscript of something the port never declared as an array is the gap it

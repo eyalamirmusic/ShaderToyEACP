@@ -3,6 +3,7 @@
 #include "Lexer.h"
 
 #include <cstdlib>
+#include <set>
 
 namespace Shadertoy::Glsl
 {
@@ -429,6 +430,9 @@ private:
             statement.line = peek().line;
             statement.name = advance().text;
 
+            if (shader.isStructType(type))
+                structLocals.insert(statement.name);
+
             // `vec3 palette[4]`. The size is dropped here for the same reason
             // it is in the constructor: the initialiser already carries it.
             if (match("["))
@@ -453,6 +457,94 @@ private:
     bool startsDeclaration() const
     {
         return check("const") || (isTypeName(peek().text) && peek(1).isIdentifier());
+    }
+
+    // `struct Name { type field; ... };`, kept with its fields rather than
+    // skipped: they are what a value of it scalarises into. A trailing
+    // declarator - `} hit;` - is the declaration it looks like, so it is parsed
+    // as one instead of being thrown away with the braces.
+    void parseStruct(Vector<Statement>& into)
+    {
+        advance(); // 'struct'
+
+        auto declared = StructType {};
+
+        if (!peek().isIdentifier())
+        {
+            report(DiagnosticKind::ParseError, "expected a name after 'struct'");
+            skipBalanced("{", "}");
+            skipToSemicolon();
+            return;
+        }
+
+        declared.name = advance().text;
+        expect("{");
+
+        while (!check("}") && !peek().isEnd())
+            parseField(declared);
+
+        expect("}");
+
+        auto type = declared.name;
+        shader.structTypes.add(std::move(declared));
+
+        if (!peek().isIdentifier())
+        {
+            expect(";");
+            return;
+        }
+
+        do
+        {
+            auto statement = Statement {StatementKind::Declare};
+            statement.type = type;
+            statement.line = peek().line;
+            statement.name = advance().text;
+            structLocals.insert(statement.name);
+
+            if (match("="))
+                statement.value = parseExpression();
+
+            into.add(std::move(statement));
+        } while (match(","));
+
+        expect(";");
+    }
+
+    void parseField(StructType& declared)
+    {
+        auto type = advance().text;
+
+        if (!peek().isIdentifier())
+        {
+            report(DiagnosticKind::ParseError,
+                   "expected a field name after '" + type + "'");
+            skipToSemicolon();
+            return;
+        }
+
+        do
+        {
+            auto field = Field {type, advance().text};
+
+            // A field that is an array has no single value to become, so it is
+            // the aggregate the EDSL cannot express after all - and the whole
+            // struct goes with it, since scalarising the rest would leave one
+            // field of it silently missing.
+            if (match("["))
+            {
+                declared.supported = false;
+
+                if (!check("]"))
+                    parseExpression();
+
+                expect("]");
+            }
+
+            declared.fields.add(std::move(field));
+        } while (match(","));
+
+        expect(";");
     }
 
     // A built-in type, or one of the structs this shader declared.
@@ -541,6 +633,39 @@ private:
         addAssignment(into, target, op, literalOne(), line);
     }
 
+    // The dotted source path a member chain names, `hit.material.albedo` for
+    // however many members deep it goes, and empty for anything that is not one
+    // - a subscript in the middle of it, or a call at its root.
+    std::string pathOf(int node) const
+    {
+        const auto& expr = shader.expr(node);
+
+        if (expr.kind == ExprKind::Identifier)
+            return expr.text;
+
+        if (expr.kind != ExprKind::Member)
+            return {};
+
+        auto object = pathOf(expr.args[0]);
+
+        return object.empty() ? std::string {} : object + "." + expr.text;
+    }
+
+    // Whether a member chain reaches into a struct rather than naming
+    // components of a vector, which is what decides whether writing through it
+    // is an assignment lowering can scalarise or the component write the EDSL
+    // has no spelling for. The root is what settles it: only a local declared
+    // with a struct type has fields at all.
+    bool isStructPath(int node) const
+    {
+        const auto& expr = shader.expr(node);
+
+        if (expr.kind == ExprKind::Identifier)
+            return structLocals.count(expr.text) != 0;
+
+        return expr.kind == ExprKind::Member && isStructPath(expr.args[0]);
+    }
+
     void addAssignment(Vector<Statement>& into,
                        int target,
                        const std::string& op,
@@ -548,6 +673,20 @@ private:
                        int line)
     {
         const auto& targetNode = shader.expr(target);
+
+        // `hit.distance = d`. A struct field is a local of its own once the
+        // struct is scalarised, so this is an ordinary assignment to a name
+        // that happens to be spelled with a dot in it.
+        if (targetNode.kind == ExprKind::Member && isStructPath(target))
+        {
+            auto statement = Statement {StatementKind::Assign};
+            statement.name = pathOf(target);
+            statement.op = op;
+            statement.value = value;
+            statement.line = line;
+            into.add(std::move(statement));
+            return;
+        }
 
         if (targetNode.kind != ExprKind::Identifier)
         {
@@ -764,6 +903,15 @@ private:
             return;
         }
 
+        // A struct declared inside a body is the same declaration it is at the
+        // top level: lowering flattens every scope into one anyway, so where it
+        // was written changes nothing about what it becomes.
+        if (check("struct"))
+        {
+            parseStruct(into);
+            return;
+        }
+
         if (startsDeclaration())
         {
             parseDeclaration(into);
@@ -848,7 +996,12 @@ private:
                 parameter.name = advance().text;
 
             if (!parameter.name.empty())
+            {
+                if (shader.isStructType(parameter.type))
+                    structLocals.insert(parameter.name);
+
                 function.parameters.add(std::move(parameter));
+            }
 
             if (!match(","))
                 break;
@@ -877,23 +1030,9 @@ private:
                 continue;
             }
 
-            // A struct is a capability the EDSL does not have, so it is named
-            // as one rather than left to come out as a parse error - and it is
-            // skipped whole, brace body and trailing declarator included.
             if (check("struct"))
             {
-                report(DiagnosticKind::UnsupportedType, "struct");
-                advance();
-
-                // Its name is kept even though its body is not: a later
-                // `Hit hit = ...` is then a declaration of an unsupported type,
-                // which names the same capability once more rather than
-                // scattering a parse error and a handful of false swizzles
-                // across every line that touches one.
-                shader.structTypes.add(advance().text);
-
-                skipBalanced("{", "}");
-                skipToSemicolon();
+                parseStruct(shader.globals);
                 continue;
             }
 
@@ -939,6 +1078,14 @@ private:
     Vector<Token> tokens;
     Vector<Diagnostic> diagnostics;
     Shader shader;
+
+    // Every name declared with a struct type, which is all that is needed to
+    // tell `hit.distance = d` from `col.x = 1.0`. Flat rather than scoped: the
+    // two would have to be the same name in two functions for that to matter,
+    // and lowering resolves the path properly there anyway - what it cannot
+    // find, it reports as the component write this took it for.
+    std::set<std::string> structLocals;
+
     int position = 0;
 };
 } // namespace

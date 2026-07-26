@@ -54,8 +54,20 @@ truncation is a ramp rather than a lattice and a box test collapsed with `any()`
 lights three quarters of the frame instead of one — and both of those compile
 and report nothing.
 
-`Surface.glsl` is the one that walks into a wall now, which is what keeps the
-coverage table from being an empty measurement. Its scene function hands back
-how far away the surface was *and* what it was made of, which in GLSL is a
-struct: the last of the type row, and the one thing left that no single value in
-the EDSL stands for.
+`Surface.glsl` and `Facets.glsl` are stage 8's, and they measure the aggregate —
+which turned out to be a capability of the transpiler rather than one the EDSL
+was missing, since a struct of handles is a C++ struct and lowering already
+renames every local into one flat scope. The first is a march whose scene
+function hands back how far away the surface was *and* what it was made of,
+carried out of the loop a field at a time. The second is the rest of it: a
+struct with a struct inside it, passed to a helper and handed back from one, and
+a ternary choosing between two whole values of it.
+
+`Tests/Runtime/StructTests` renders both back, because every way of getting the
+scalarisation wrong still compiles and still reports nothing — a leaf read out
+of the wrong slot is a plausible colour, and a field that never escaped the loop
+is the colour it started as.
+
+Nothing in the corpus walks into a wall today, which is a corpus that has run
+out of things to say rather than an EDSL that has run out of gaps. Growing it is
+what the multi-buffer half of stage 8 is for.

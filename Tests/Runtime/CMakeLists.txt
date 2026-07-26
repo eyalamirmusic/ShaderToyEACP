@@ -6,6 +6,7 @@ nano_add_executable(RuntimeTests
             ControlFlowTests.cpp
             ProgramTests.cpp
             PortTests.cpp
+            StructTests.cpp
             TestMain.cpp
             VectorTests.cpp
         TARGETS shadertoy-runtime)
@@ -39,3 +40,9 @@ shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Pale
 # Stage 7: the vector halves of both - a grid cell counted in ivec2, a
 # componentwise lessThan, and the all() that collapses what it yields.
 shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Lattice.glsl NAME Lattice)
+
+# Stage 8: the aggregate, which scalarises into one local per field - a struct
+# carried through a loop in Surface, and one with a struct inside it passed to
+# and returned from a helper in Facets.
+shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Surface.glsl NAME Surface)
+shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Facets.glsl NAME Facets)

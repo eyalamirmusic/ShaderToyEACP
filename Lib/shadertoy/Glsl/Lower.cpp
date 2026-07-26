@@ -24,9 +24,49 @@ struct Binding
     int node = -1;
     bool isConstant = false;
     double value = 0.0;
+
+    // The struct this name has the type of, when it has one. A struct binds no
+    // node of its own - it has no single value to be - and its leaves are bound
+    // beside it under the dotted paths that name them. That substitution is the
+    // whole of what the EDSL needs to express an aggregate: the transpiler
+    // already flattens every scope into one, so a struct is a naming convention
+    // over its fields and the renaming it needs is the renaming already there.
+    //
+    // A leaf is never marked constant. A struct field holding a foldable number
+    // is worth nothing and giving one up at the right moment is worth a bug.
+    std::string structType {};
+};
+
+// What lowering a value produced. Everything the EDSL has a type for is one
+// node; a struct is the leaves it scalarised into, in the order its type
+// declares them.
+struct Value
+{
+    int node = -1;
+    Vector<int> leaves {};
+};
+
+// An argument at a call site, lowered in the caller's scope before the callee's
+// is pushed - one node, or a struct's worth of them.
+struct Argument
+{
+    Binding binding {};
+    Vector<int> leaves {};
 };
 
 using Scope = std::map<std::string, Binding>;
+
+// The local a leaf becomes: `hit.material.albedo` is declared as
+// `hit_material_albedo`, which is the same name with the only character C++
+// will not take in one replaced.
+std::string flattened(std::string path)
+{
+    for (auto& character: path)
+        if (character == '.')
+            character = '_';
+
+    return path;
+}
 
 // Names the port cannot hand out to a local, because the runtime already has
 // something of that name in scope.
@@ -125,7 +165,7 @@ private:
 
     void bind(const std::string& name, Binding binding)
     {
-        scopes.back()[name] = binding;
+        scopes.back()[name] = std::move(binding);
     }
 
     // --- output nodes -----------------------------------------------------
@@ -346,6 +386,255 @@ private:
         return false;
     }
 
+    // --- structs ----------------------------------------------------------
+
+    // The dotted source path a name or a member chain spells, which is the key
+    // every leaf of a struct is bound under. Empty for anything that is not one
+    // - a subscript partway along it, or a call at its root.
+    std::string pathOf(int node) const
+    {
+        if (node < 0)
+            return {};
+
+        const auto& expr = source.expr(node);
+
+        if (expr.kind == ExprKind::Identifier)
+            return expr.text;
+
+        if (expr.kind != ExprKind::Member)
+            return {};
+
+        auto object = pathOf(expr.args[0]);
+
+        return object.empty() ? std::string {} : object + "." + expr.text;
+    }
+
+    // Which struct an expression has the type of, empty when it has none. This
+    // is the whole of the type system the transpiler carries: every other type
+    // is the EDSL's business, and this one exists only to be taken apart.
+    std::string structTypeOf(int node) const
+    {
+        if (node < 0)
+            return {};
+
+        const auto& expr = source.expr(node);
+
+        switch (expr.kind)
+        {
+            case ExprKind::Identifier:
+            {
+                const auto* binding = find(expr.text);
+                return binding != nullptr ? binding->structType : std::string {};
+            }
+
+            case ExprKind::Call:
+            {
+                if (source.isStructType(expr.text))
+                    return expr.text;
+
+                const auto* function = source.function(expr.text);
+
+                if (function != nullptr && source.isStructType(function->returnType))
+                    return function->returnType;
+
+                return {};
+            }
+
+            case ExprKind::Member:
+                return fieldTypeOf(structTypeOf(expr.args[0]), expr.text);
+
+            case ExprKind::Ternary:
+                return structTypeOf(expr.args[1]);
+
+            default:
+                return {};
+        }
+    }
+
+    // Which struct a dotted path has the type of, following the fields from the
+    // name at its root: `best.material` is one where `best.distance` is not,
+    // and writing to it is writing to every leaf beneath it.
+    std::string structTypeOfPath(const std::string& path) const
+    {
+        auto dot = path.find('.');
+        const auto* root = find(path.substr(0, dot));
+        auto type = root != nullptr ? root->structType : std::string {};
+
+        while (dot != std::string::npos && !type.empty())
+        {
+            auto next = path.find('.', dot + 1);
+            auto length = next == std::string::npos ? next : next - dot - 1;
+
+            type = fieldTypeOf(type, path.substr(dot + 1, length));
+            dot = next;
+        }
+
+        return type;
+    }
+
+    // The type of one field, but only when it is itself a struct: everything
+    // else is a leaf and its type is the emitter's to work out, the same way it
+    // works out the type of any other local.
+    std::string fieldTypeOf(const std::string& structName,
+                            const std::string& field) const
+    {
+        const auto* declared = source.structType(structName);
+
+        if (declared == nullptr)
+            return {};
+
+        for (const auto& candidate: declared->fields)
+            if (candidate.name == field && source.isStructType(candidate.type))
+                return candidate.type;
+
+        return {};
+    }
+
+    // A struct-valued expression, lowered into one node per leaf. Every form a
+    // Shadertoy writes one in arrives here: a name, a field of another struct,
+    // the constructor, a helper that hands one back, and a ternary choosing
+    // between two - which is a choice per leaf, exactly as the EDSL's select is.
+    Vector<int>
+        lowerStructValue(int node, const std::string& type, Vector<Statement>& into)
+    {
+        if (node < 0 || type.empty())
+            return {};
+
+        const auto& expr = source.expr(node);
+
+        switch (expr.kind)
+        {
+            case ExprKind::Identifier:
+            case ExprKind::Member:
+                return readStruct(pathOf(node), type);
+
+            case ExprKind::Call:
+                return lowerStructCall(expr, into);
+
+            case ExprKind::Ternary:
+                return lowerStructTernary(expr, type, into);
+
+            default:
+                break;
+        }
+
+        report(DiagnosticKind::UnsupportedType, "struct");
+        return {};
+    }
+
+    Vector<int> readStruct(const std::string& path, const std::string& type)
+    {
+        auto leaves = Vector<int> {};
+
+        for (const auto& leaf: source.leavesOf(type))
+        {
+            const auto* binding =
+                path.empty() ? nullptr : find(path + "." + leaf.path);
+
+            if (binding == nullptr || binding->node < 0)
+            {
+                report(DiagnosticKind::UnsupportedType, "struct");
+                return {};
+            }
+
+            leaves.add(binding->node);
+        }
+
+        return leaves;
+    }
+
+    Vector<int> lowerStructTernary(const Expr& expr,
+                                   const std::string& type,
+                                   Vector<Statement>& into)
+    {
+        auto condition = lowerExpression(expr.args[0], into);
+        auto whenTrue = lowerStructValue(expr.args[1], type, into);
+        auto whenFalse = lowerStructValue(expr.args[2], type, into);
+        auto leaves = Vector<int> {};
+
+        if (whenTrue.size() != whenFalse.size())
+            return leaves;
+
+        for (auto index = 0; index < whenTrue.size(); ++index)
+        {
+            auto choice = Expr {ExprKind::Ternary};
+            choice.args.add(condition);
+            choice.args.add(whenTrue[index]);
+            choice.args.add(whenFalse[index]);
+            leaves.add(output.add(std::move(choice)));
+        }
+
+        return leaves;
+    }
+
+    Vector<int> lowerStructCall(const Expr& expr, Vector<Statement>& into)
+    {
+        if (source.isStructType(expr.text))
+            return lowerStructConstructor(expr, into);
+
+        const auto* function = source.function(expr.text);
+
+        if (function != nullptr && canInline(*function, expr))
+            return expandCall(*function, expr, into, true).leaves;
+
+        // A helper handing back a struct that will not inline has nowhere to
+        // put it: there is no aggregate for the call to evaluate to. What is
+        // missing is the inlining rather than the type, so that is what this
+        // says - the same name the table would have counted it under anyway.
+        if (function != nullptr)
+        {
+            measureBody(*function, expr);
+            report(DiagnosticKind::UserFunction, expr.text);
+        }
+        else
+        {
+            report(DiagnosticKind::UnsupportedType, "struct");
+        }
+
+        return {};
+    }
+
+    // `Hit(d, albedo)`. Its arguments are one per field rather than one per
+    // leaf, since a field that is a struct of its own takes a whole struct.
+    Vector<int> lowerStructConstructor(const Expr& expr, Vector<Statement>& into)
+    {
+        const auto* declared = source.structType(expr.text);
+        auto leaves = Vector<int> {};
+
+        if (declared == nullptr || !declared->supported
+            || declared->fields.size() != expr.args.size())
+        {
+            report(DiagnosticKind::UnsupportedType, "struct");
+            return leaves;
+        }
+
+        for (auto index = 0; index < declared->fields.size(); ++index)
+        {
+            const auto& field = declared->fields[index];
+
+            if (!source.isStructType(field.type))
+            {
+                leaves.add(lowerExpression(expr.args[index], into));
+                continue;
+            }
+
+            for (auto nested: lowerStructValue(expr.args[index], field.type, into))
+                leaves.add(nested);
+        }
+
+        return leaves;
+    }
+
+    int readStructLeaf(int node)
+    {
+        if (const auto* binding = find(pathOf(node)))
+            if (binding->node >= 0)
+                return binding->node;
+
+        report(DiagnosticKind::UnsupportedType, "struct");
+        return -1;
+    }
+
     // --- expressions ------------------------------------------------------
 
     int lowerExpression(int node, Vector<Statement>& into)
@@ -367,13 +656,32 @@ private:
             case ExprKind::Identifier:
             {
                 if (const auto* binding = find(expr.text))
+                {
+                    // A struct standing where a value is wanted. Nothing in
+                    // GLSL puts one there, so this is a shader the parser read
+                    // more of than it should have rather than a capability.
+                    if (!binding->structType.empty())
+                    {
+                        report(DiagnosticKind::UnsupportedType, "struct");
+                        return -1;
+                    }
+
                     return binding->node;
+                }
 
                 return identifier(expr.text);
             }
 
             case ExprKind::Call:
                 return lowerCall(node, into);
+
+            // A field read: the leaf it names is a local of its own by now, so
+            // this resolves to that rather than recording anything.
+            case ExprKind::Member:
+                if (!structTypeOf(expr.args[0]).empty())
+                    return readStructLeaf(node);
+
+                break;
 
             default:
                 break;
@@ -394,7 +702,7 @@ private:
         const auto* function = source.function(expr.text);
 
         if (function != nullptr && canInline(*function, expr))
-            return expandCall(*function, expr, into, true);
+            return expandCall(*function, expr, into, true).node;
 
         auto call = Expr {ExprKind::Call, expr.text};
 
@@ -524,6 +832,11 @@ private:
         return false;
     }
 
+    static bool isWriteTo(const std::string& written, const std::string& name)
+    {
+        return written == name || written.rfind(name + ".", 0) == 0;
+    }
+
     bool assignsTo(int block, const std::string& name) const
     {
         if (block < 0)
@@ -534,7 +847,10 @@ private:
             auto writes = statement.kind == StatementKind::Assign
                           || statement.kind == StatementKind::Declare;
 
-            if (writes && statement.name == name)
+            // A write to one field of a struct is a write to the struct: what
+            // decides whether a parameter needs a local of its own is whether
+            // the body leaves anything behind in it, field or whole.
+            if (writes && isWriteTo(statement.name, name))
                 return true;
 
             if (assignsTo(statement.init, name) || assignsTo(statement.step, name)
@@ -589,16 +905,23 @@ private:
                 continue;
 
             // Writing back through an out parameter means assigning to what the
-            // caller passed, so it has to be something assignable.
+            // caller passed, so it has to be something assignable - which for a
+            // struct is every one of its leaves.
+            if (source.isStructType(function.parameters[index].type))
+            {
+                if (!isAssignableStruct(call.args[index],
+                                        function.parameters[index].type))
+                    return false;
+
+                continue;
+            }
+
             const auto& argument = source.expr(call.args[index]);
 
             if (argument.kind != ExprKind::Identifier)
                 return false;
 
-            const auto* target = find(argument.text);
-
-            if (target == nullptr || target->node < 0
-                || output.expr(target->node).kind != ExprKind::Identifier)
+            if (!isAssignable(find(argument.text)))
                 return false;
         }
 
@@ -610,6 +933,27 @@ private:
 
         for (auto index = 0; index < statements.size(); ++index)
             if (index != terminator && blocksInlining(statements[index]))
+                return false;
+
+        return true;
+    }
+
+    bool isAssignable(const Binding* target) const
+    {
+        return target != nullptr && target->node >= 0
+               && output.expr(target->node).kind == ExprKind::Identifier;
+    }
+
+    bool isAssignableStruct(int argument, const std::string& type) const
+    {
+        auto path = pathOf(argument);
+        auto leaves = source.leavesOf(type);
+
+        if (path.empty() || leaves.empty())
+            return false;
+
+        for (const auto& leaf: leaves)
+            if (!isAssignable(find(path + "." + leaf.path)))
                 return false;
 
         return true;
@@ -627,15 +971,16 @@ private:
         return statements.size() - 1;
     }
 
-    int expandCall(const Function& function,
-                   const Expr& call,
-                   Vector<Statement>& into,
-                   bool keepResults)
+    Value expandCall(const Function& function,
+                     const Expr& call,
+                     Vector<Statement>& into,
+                     bool keepResults)
     {
-        auto incoming = Vector<Binding> {};
+        auto incoming = Vector<Argument> {};
 
         for (auto index = 0; index < call.args.size(); ++index)
-            incoming.add(argumentBinding(call.args[index], into));
+            incoming.add(argumentBinding(
+                call.args[index], function.parameters[index].type, into));
 
         // The body sees the globals and its own parameters, and nothing the
         // caller happens to have in scope.
@@ -656,28 +1001,34 @@ private:
             if (index != terminator)
                 lowerStatement(statements[index], into);
 
-        auto result = -1;
+        auto result = Value {};
 
         if (terminator >= 0)
-            result = lowerExpression(statements[terminator].value, into);
+        {
+            if (source.isStructType(function.returnType))
+                result.leaves = lowerStructValue(
+                    statements[terminator].value, function.returnType, into);
+            else
+                result.node = lowerExpression(statements[terminator].value, into);
+        }
 
         // Nothing consumes the result of a body expanded only to be measured,
         // so it is kept as a statement of its own: what a helper returns is
         // usually where its gaps are.
-        if (!keepResults && result >= 0)
+        if (!keepResults)
         {
-            auto measurement = Statement {StatementKind::Return};
-            measurement.value = result;
-            measurement.line = line;
-            into.add(std::move(measurement));
+            measure(result.node, into);
+
+            for (auto leaf: result.leaves)
+                measure(leaf, into);
         }
 
         inlining.pop_back();
 
-        auto finals = Vector<Binding> {};
+        auto finals = Vector<Argument> {};
 
         for (const auto& parameter: function.parameters)
-            finals.add(*find(parameter.name));
+            finals.add(finalBinding(parameter));
 
         scopes = std::move(callerScopes);
 
@@ -687,16 +1038,54 @@ private:
         return result;
     }
 
-    Binding argumentBinding(int node, Vector<Statement>& into)
+    void measure(int node, Vector<Statement>& into) const
     {
-        auto binding = Binding {};
+        if (node < 0)
+            return;
+
+        auto measurement = Statement {StatementKind::Return};
+        measurement.value = node;
+        measurement.line = line;
+        into.add(std::move(measurement));
+    }
+
+    // What a parameter stands for once the body has run, which is what an out
+    // parameter writes back to the caller.
+    Argument finalBinding(const Parameter& parameter)
+    {
+        auto final = Argument {};
+
+        if (const auto* binding = find(parameter.name))
+            final.binding = *binding;
+
+        for (const auto& leaf: source.leavesOf(parameter.type))
+            if (const auto* binding = find(parameter.name + "." + leaf.path))
+                final.leaves.add(binding->node);
+
+        return final;
+    }
+
+    Argument argumentBinding(int node,
+                             const std::string& parameterType,
+                             Vector<Statement>& into)
+    {
+        auto argument = Argument {};
+
+        if (source.isStructType(parameterType))
+        {
+            argument.binding.structType = parameterType;
+            argument.leaves = lowerStructValue(node, parameterType, into);
+            return argument;
+        }
+
+        auto& binding = argument.binding;
         binding.node = lowerExpression(node, into);
 
         if (binding.node >= 0 && output.expr(binding.node).kind == ExprKind::Number)
         {
             binding.isConstant = true;
             binding.value = output.expr(binding.node).value;
-            return binding;
+            return argument;
         }
 
         const auto& expr = source.expr(node);
@@ -708,7 +1097,7 @@ private:
                 binding.value = existing->value;
             }
 
-        return binding;
+        return argument;
     }
 
     // A parameter is substituted where that changes nothing - a literal or a
@@ -717,12 +1106,19 @@ private:
     // accident.
     void bindParameter(const Function& function,
                        int index,
-                       const Binding& incoming,
+                       const Argument& incoming,
                        Vector<Statement>& into)
     {
         const auto& parameter = function.parameters[index];
-        auto kind =
-            incoming.node >= 0 ? output.expr(incoming.node).kind : ExprKind::Number;
+
+        if (!incoming.binding.structType.empty())
+        {
+            bindStructParameter(function, parameter, incoming, into);
+            return;
+        }
+
+        auto node = incoming.binding.node;
+        auto kind = node >= 0 ? output.expr(node).kind : ExprKind::Number;
 
         auto substitutable =
             !parameter.writesBack
@@ -731,25 +1127,74 @@ private:
 
         if (substitutable)
         {
-            scopes.back()[parameter.name] = incoming;
+            scopes.back()[parameter.name] = incoming.binding;
             return;
         }
 
         auto emitted = unique(parameter.name);
         auto declaration =
             Statement {StatementKind::Declare, emitted, parameter.type};
-        declaration.value = incoming.node;
+        declaration.value = node;
         declaration.line = line;
         into.add(std::move(declaration));
 
-        auto binding = incoming;
+        auto binding = incoming.binding;
         binding.node = identifier(emitted);
         scopes.back()[parameter.name] = binding;
     }
 
+    // A struct parameter is bound the way a scalar one is, one leaf at a time:
+    // substituted where that changes nothing, and given a local of its own
+    // where the body writes to it or the caller reads the result back.
+    void bindStructParameter(const Function& function,
+                             const Parameter& parameter,
+                             const Argument& incoming,
+                             Vector<Statement>& into)
+    {
+        auto binding = Binding {};
+        binding.structType = parameter.type;
+        scopes.back()[parameter.name] = binding;
+
+        auto leaves = source.leavesOf(parameter.type);
+
+        if (incoming.leaves.size() != leaves.size())
+            return;
+
+        auto written =
+            parameter.writesBack || assignsTo(function.body, parameter.name);
+
+        for (auto index = 0; index < leaves.size(); ++index)
+        {
+            auto node = incoming.leaves[index];
+            auto kind = node >= 0 ? output.expr(node).kind : ExprKind::Number;
+            auto leafBinding = Binding {};
+
+            if (!written
+                && (kind == ExprKind::Number || kind == ExprKind::Identifier))
+            {
+                leafBinding.node = node;
+            }
+            else
+            {
+                auto emitted =
+                    unique(parameter.name + "_" + flattened(leaves[index].path));
+
+                auto declaration =
+                    Statement {StatementKind::Declare, emitted, leaves[index].type};
+                declaration.value = node;
+                declaration.line = line;
+                into.add(std::move(declaration));
+
+                leafBinding.node = identifier(emitted);
+            }
+
+            scopes.back()[parameter.name + "." + leaves[index].path] = leafBinding;
+        }
+    }
+
     void writeBack(const Function& function,
                    const Expr& call,
-                   const Vector<Binding>& finals,
+                   const Vector<Argument>& finals,
                    Vector<Statement>& into)
     {
         for (auto index = 0; index < function.parameters.size(); ++index)
@@ -759,15 +1204,47 @@ private:
             if (!parameter.writesBack || !assignsTo(function.body, parameter.name))
                 continue;
 
+            if (source.isStructType(parameter.type))
+            {
+                writeBackStruct(parameter, call.args[index], finals[index], into);
+                continue;
+            }
+
             auto* target = find(source.expr(call.args[index]).text);
             auto assignment = Statement {StatementKind::Assign};
             assignment.name = output.expr(target->node).text;
-            assignment.value = finals[index].node;
+            assignment.value = finals[index].binding.node;
             assignment.line = line;
             into.add(std::move(assignment));
 
-            target->isConstant = finals[index].isConstant;
-            target->value = finals[index].value;
+            target->isConstant = finals[index].binding.isConstant;
+            target->value = finals[index].binding.value;
+        }
+    }
+
+    void writeBackStruct(const Parameter& parameter,
+                         int argument,
+                         const Argument& final,
+                         Vector<Statement>& into)
+    {
+        auto path = pathOf(argument);
+        auto leaves = source.leavesOf(parameter.type);
+
+        if (path.empty() || final.leaves.size() != leaves.size())
+            return;
+
+        for (auto index = 0; index < leaves.size(); ++index)
+        {
+            auto* target = find(path + "." + leaves[index].path);
+
+            if (target == nullptr || target->node < 0)
+                continue;
+
+            auto assignment =
+                Statement {StatementKind::Assign, output.expr(target->node).text};
+            assignment.value = final.leaves[index];
+            assignment.line = line;
+            into.add(std::move(assignment));
         }
     }
 
@@ -873,8 +1350,63 @@ private:
         bind(statement.name, binding);
     }
 
+    // A struct-typed local, which is one local per leaf and no aggregate at
+    // all: the fields are values the EDSL already has types for, and the name
+    // that gathered them was only ever a name.
+    void lowerStructDeclare(const Statement& statement, Vector<Statement>& into)
+    {
+        auto leaves = source.leavesOf(statement.type);
+
+        if (leaves.empty())
+        {
+            report(DiagnosticKind::UnsupportedType, "struct");
+            return;
+        }
+
+        auto values = statement.value >= 0
+                          ? lowerStructValue(statement.value, statement.type, into)
+                          : Vector<int> {};
+
+        if (statement.value >= 0 && values.size() != leaves.size())
+            return;
+
+        auto binding = Binding {};
+        binding.structType = statement.type;
+        bind(statement.name, std::move(binding));
+
+        for (auto index = 0; index < leaves.size(); ++index)
+        {
+            auto emitted =
+                unique(statement.name + "_" + flattened(leaves[index].path));
+
+            auto declaration =
+                Statement {StatementKind::Declare, emitted, leaves[index].type};
+            declaration.value = index < values.size() ? values[index] : -1;
+            declaration.line = statement.line;
+            into.add(std::move(declaration));
+
+            auto leafBinding = Binding {};
+            leafBinding.node = identifier(emitted);
+            bind(statement.name + "." + leaves[index].path, std::move(leafBinding));
+        }
+    }
+
     void lowerDeclare(const Statement& statement, Vector<Statement>& into)
     {
+        if (source.isStructType(statement.type))
+        {
+            // An array of structs is the one place the aggregate really is the
+            // gap: the EDSL's array holds values, and scalarising the struct
+            // would need an array per leaf and a subscript that agreed across
+            // all of them.
+            if (statement.isArray)
+                report(DiagnosticKind::UnsupportedType, "array of structs");
+            else
+                lowerStructDeclare(statement, into);
+
+            return;
+        }
+
         if (statement.isArray)
         {
             lowerArrayDeclare(statement, into);
@@ -925,8 +1457,59 @@ private:
         bind(statement.name, binding);
     }
 
+    // Assigning a whole struct is assigning each of its leaves, in the order the
+    // type declares them. The value is lowered before any of them is written,
+    // which is what keeps `a = b` and `b = a` from reading what the other half
+    // of the same statement just left behind.
+    void lowerStructAssign(const Statement& statement,
+                           const std::string& type,
+                           Vector<Statement>& into)
+    {
+        auto leaves = source.leavesOf(type);
+        auto values = lowerStructValue(statement.value, type, into);
+
+        if (values.size() != leaves.size())
+            return;
+
+        for (auto index = 0; index < leaves.size(); ++index)
+        {
+            auto* target = find(statement.name + "." + leaves[index].path);
+
+            if (!isAssignable(target))
+            {
+                report(DiagnosticKind::UnsupportedType, "struct");
+                return;
+            }
+
+            auto assignment =
+                Statement {StatementKind::Assign, output.expr(target->node).text};
+            assignment.value = values[index];
+            assignment.line = statement.line;
+            into.add(std::move(assignment));
+        }
+    }
+
     void lowerAssign(const Statement& statement, Vector<Statement>& into)
     {
+        auto structTarget = structTypeOfPath(statement.name);
+
+        if (!structTarget.empty())
+        {
+            lowerStructAssign(statement, structTarget, into);
+            return;
+        }
+
+        // A dotted name nothing is bound under is not a struct field after all,
+        // which leaves it as what the parser took it for: writing one component
+        // of a value, which the EDSL has no spelling for.
+        if (find(statement.name) == nullptr
+            && statement.name.find('.') != std::string::npos)
+        {
+            report(DiagnosticKind::ComponentAssignment,
+                   statement.name.substr(statement.name.rfind('.')));
+            return;
+        }
+
         auto value = lowerExpression(statement.value, into);
 
         auto* existing = find(statement.name);

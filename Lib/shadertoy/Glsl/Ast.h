@@ -90,6 +90,38 @@ struct Parameter
     bool writesBack = false; // out / inout, so the caller sees the final value
 };
 
+struct Field
+{
+    std::string type {};
+    std::string name {};
+};
+
+// A struct the shader declared, kept with its fields. The EDSL has no aggregate
+// and needs none: a struct is a name for its fields, and lowering already
+// renames every local into one flat scope - so a struct-typed local becomes one
+// local per field and nothing crosses a boundary that would need a type.
+//
+// What the parser could not keep is the exception, and it is per struct rather
+// than per shader: a field that is itself an array has no scalar to become, so
+// a value of that struct is the aggregate gap it always was, and one of any
+// other struct is not.
+struct StructType
+{
+    std::string name {};
+    Vector<Field> fields {};
+    bool supported = true;
+};
+
+// One value a struct scalarises into, named by the dotted path that reaches it
+// from the struct's own root. A field that is itself a struct contributes its
+// own leaves rather than one of its own, so `Hit { Material m; }` yields
+// `m.albedo` and not `m`.
+struct StructLeaf
+{
+    std::string path {};
+    std::string type {};
+};
+
 struct Function
 {
     std::string name {};
@@ -142,19 +174,53 @@ struct Shader
     // one unreachable loop from hiding every intrinsic it calls.
     Vector<Statement> dropped;
 
-    // The struct types the shader declared. The EDSL has no aggregate, so none
-    // of them can be lowered - but knowing their names is what lets a value of
-    // one be named as the capability it needs rather than coming out as a parse
-    // error, a mystery call and a swizzle of a field.
-    Vector<std::string> structTypes;
+    // The struct types the shader declared, with their fields: a value of one
+    // is scalarised into those, so knowing them is what turns the aggregate
+    // from a capability the EDSL is missing into a naming convention lowering
+    // resolves. Keeping the name alone was already what stopped a struct from
+    // arriving as a parse error, a mystery call and a swizzle of a field.
+    Vector<StructType> structTypes;
+
+    const StructType* structType(const std::string& name) const
+    {
+        for (const auto& declared: structTypes)
+            if (declared.name == name)
+                return &declared;
+
+        return nullptr;
+    }
 
     bool isStructType(const std::string& name) const
     {
-        for (const auto& declared: structTypes)
-            if (declared == name)
-                return true;
+        return structType(name) != nullptr;
+    }
 
-        return false;
+    // The values a struct really consists of, in declaration order, walking
+    // through any field that is a struct of its own. The depth cap is for a
+    // shader that names a type inside itself: GLSL forbids it, a malformed one
+    // can still spell it, and nothing here should recurse on the strength of
+    // input.
+    Vector<StructLeaf> leavesOf(const std::string& name, int depth = 0) const
+    {
+        auto leaves = Vector<StructLeaf> {};
+        const auto* declared = structType(name);
+
+        if (declared == nullptr || !declared->supported || depth > 8)
+            return leaves;
+
+        for (const auto& field: declared->fields)
+        {
+            if (!isStructType(field.type))
+            {
+                leaves.add({field.name, field.type});
+                continue;
+            }
+
+            for (const auto& nested: leavesOf(field.type, depth + 1))
+                leaves.add({field.name + "." + nested.path, nested.type});
+        }
+
+        return leaves;
     }
 
     // What mainImage's parameters were called. A port keeps the author's names
