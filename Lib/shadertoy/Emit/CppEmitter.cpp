@@ -253,6 +253,12 @@ public:
 
         body += emitResult();
 
+        // Statements lowering could not keep are walked for what they need and
+        // their text thrown away, so an unreachable loop still contributes every
+        // intrinsic, swizzle and channel inside it to the coverage report.
+        for (const auto& statement: shader.dropped)
+            emitStatement(statement);
+
         auto result = EmitResult {};
         result.code = preamble() + body + epilogue();
         result.diagnostics = std::move(diagnostics);
@@ -333,7 +339,7 @@ private:
             types[statement.name] =
                 declared != Type::Unknown ? declared : typeOf(statement.value);
 
-            return layout(
+            return layoutValue(
                 "        auto " + statement.name + " = ", statement.value, ";");
         }
 
@@ -346,7 +352,7 @@ private:
                                         : typeOf(statement.value);
             pending.erase(found);
 
-            return layout(
+            return layoutValue(
                 "        auto " + statement.name + " = ", statement.value, ";");
         }
 
@@ -358,7 +364,7 @@ private:
                                         ? Type::Vec4
                                         : typeOf(statement.value);
 
-            return layout(
+            return layoutValue(
                 "        auto " + statement.name + " = ", statement.value, ";");
         }
 
@@ -367,60 +373,200 @@ private:
         // rebind it: `col -= a + b` must not become `col = col - a + b`.
         if (!statement.op.empty())
         {
-            auto operand =
-                emitOperand(statement.value, precedenceOf(statement.op), true);
-
             auto head = "        " + statement.name + " = " + statement.name;
-            auto single = head + " " + statement.op + " " + operand + ";";
+            auto single =
+                head + " " + statement.op + " "
+                + emitOperand(statement.value, precedenceOf(statement.op), true)
+                + ";";
 
-            if (single.size() <= columnLimit)
+            if ((int) single.size() <= columnLimit)
                 return single + "\n";
 
-            return head + "\n            " + statement.op + " " + operand + ";\n";
+            auto start = 12 + (int) statement.op.size() + 1;
+
+            return head + "\n            " + statement.op + " "
+                   + layoutOperand(statement.value,
+                                   start,
+                                   "                ",
+                                   precedenceOf(statement.op),
+                                   true)
+                   + ";\n";
         }
 
-        return layout("        " + statement.name + " = ", statement.value, ";");
+        return layoutValue(
+            "        " + statement.name + " = ", statement.value, ";");
     }
 
     // --- layout ----------------------------------------------------------
 
-    // One statement, wrapped when it will not fit. Only a top-level sum is
-    // broken up, because that is the shape that runs long in practice - a
-    // shader accumulating terms - and breaking it at the operators is how the
-    // GLSL was written in the first place.
+    // Everything below exists because an unrolled, inlined body arrives as one
+    // expression however long it started out, and a generated header sits in a
+    // project held to eacp's column limit.
+
+    std::string
+        layoutValue(const std::string& prefix, int node, const std::string& suffix)
+    {
+        if (!needsAnchor(node))
+            return layout(prefix, node, suffix);
+
+        return layout(prefix + "constant(", node, ")" + suffix);
+    }
+
     std::string
         layout(const std::string& prefix, int node, const std::string& suffix)
     {
-        auto single = prefix + emitExpression(node) + suffix;
-
-        if (single.size() <= columnLimit || node < 0)
-            return single + "\n";
-
-        auto terms = Vector<std::pair<std::string, int>> {};
-        flattenSum(node, terms);
-
-        if (terms.size() < 2)
-            return single + "\n";
-
-        auto text = prefix + emitOperand(terms[0].second, 1, false);
-
-        for (auto index = 1; index < terms.size(); ++index)
-            text += "\n            " + terms[index].first + " "
-                    + emitOperand(terms[index].second, 1, true);
-
-        return text + suffix + "\n";
+        auto column = (int) prefix.size();
+        auto body =
+            layoutExpression(node, column, (int) suffix.size(), "            ");
+        return prefix + body + suffix + "\n";
     }
 
-    // Walks the left spine of a + / - chain. Only the spine: a right operand
-    // that is itself a sum keeps its grouping, since floating-point addition
-    // does not re-associate.
-    void flattenSum(int node, Vector<std::pair<std::string, int>>& terms) const
+    // One expression, broken where it will not fit on the line it starts on. A
+    // run of operators at one precedence breaks at the operators, the way the
+    // GLSL was written; a call breaks between its arguments; and what lands on
+    // a continuation line is laid out the same way again.
+    std::string layoutExpression(int node,
+                                 int column,
+                                 int trailing,
+                                 const std::string& indent)
+    {
+        auto single = emitExpression(node);
+
+        if (node < 0 || column + (int) single.size() + trailing <= columnLimit)
+            return single;
+
+        const auto& expr = shader.expr(node);
+        auto precedence =
+            expr.kind == ExprKind::Binary ? precedenceOf(expr.text) : 0;
+
+        if (precedence > 0)
+        {
+            auto terms = Vector<std::pair<std::string, int>> {};
+            flattenChain(node, precedence, terms);
+
+            if (terms.size() >= 2)
+                return layoutChain(terms, column, trailing, indent, precedence);
+        }
+
+        if (expr.kind == ExprKind::Call && !expr.args.empty())
+            return layoutCall(expr, column, trailing, indent);
+
+        return single;
+    }
+
+    std::string layoutChain(const Vector<std::pair<std::string, int>>& terms,
+                            int column,
+                            int trailing,
+                            const std::string& indent,
+                            int precedence)
+    {
+        auto inner = indent + "    ";
+        auto text = layoutOperand(terms[0].second, column, inner, precedence, false);
+
+        for (auto index = 1; index < terms.size(); ++index)
+        {
+            const auto& op = terms[index].first;
+            auto last = index + 1 == terms.size();
+            auto start = (int) indent.size() + (int) op.size() + 1;
+
+            text += "\n";
+            text += indent;
+            text += op;
+            text += " ";
+            text += layoutOperand(terms[index].second,
+                                  start,
+                                  inner,
+                                  precedence,
+                                  true,
+                                  last ? trailing : 0);
+        }
+
+        return text;
+    }
+
+    // The argument list filled greedily, so a call that runs long breaks where
+    // it has to rather than once per argument.
+    std::string layoutCall(const Expr& expr,
+                           int column,
+                           int trailing,
+                           const std::string& indent)
+    {
+        auto inner = indent + "    ";
+        auto text = expr.text + "(";
+        auto at = column + (int) text.size();
+
+        for (auto index = 0; index < expr.args.size(); ++index)
+        {
+            auto last = index + 1 == expr.args.size();
+            auto separator = last ? std::string {} : std::string {","};
+            auto reserved = (int) separator.size() + (last ? trailing + 1 : 0);
+            auto argument = emitExpression(expr.args[index]);
+
+            if (at + (int) argument.size() + reserved > columnLimit)
+            {
+                text += "\n" + indent;
+                at = (int) indent.size();
+                argument = layoutExpression(expr.args[index], at, reserved, inner);
+            }
+
+            text += argument + separator + (last ? "" : " ");
+            at = columnAfter(argument, at) + (int) separator.size() + (last ? 0 : 1);
+        }
+
+        return text + ")";
+    }
+
+    std::string layoutOperand(int node,
+                              int column,
+                              const std::string& indent,
+                              int parentPrecedence,
+                              bool onTheRight,
+                              int trailing = 0)
+    {
+        auto grouped = needsParentheses(node, parentPrecedence, onTheRight);
+        auto text = layoutExpression(
+            node, column + (grouped ? 1 : 0), trailing + (grouped ? 1 : 0), indent);
+
+        return grouped ? "(" + text + ")" : text;
+    }
+
+    bool needsParentheses(int node, int parentPrecedence, bool onTheRight) const
+    {
+        if (node < 0 || shader.expr(node).kind != ExprKind::Binary)
+            return false;
+
+        auto precedence = precedenceOf(shader.expr(node).text);
+
+        if (precedence == 0)
+            return false;
+
+        return precedence < parentPrecedence
+               || (onTheRight && precedence == parentPrecedence);
+    }
+
+    // Where a piece of text that may have wrapped leaves the cursor.
+    static int columnAfter(const std::string& text, int start)
+    {
+        auto lastBreak = text.find_last_of('\n');
+
+        if (lastBreak == std::string::npos)
+            return start + (int) text.size();
+
+        return (int) (text.size() - lastBreak - 1);
+    }
+
+    // Walks the left spine of a chain of one precedence. Only the spine: a right
+    // operand that is itself a chain keeps its grouping, since floating-point
+    // arithmetic does not re-associate.
+    void flattenChain(int node,
+                      int precedence,
+                      Vector<std::pair<std::string, int>>& terms) const
     {
         const auto& expr = shader.expr(node);
 
-        if (expr.kind == ExprKind::Binary && precedenceOf(expr.text) == 1)
+        if (expr.kind == ExprKind::Binary && precedenceOf(expr.text) == precedence)
         {
-            flattenSum(expr.args[0], terms);
+            flattenChain(expr.args[0], precedence, terms);
             terms.add({expr.text, expr.args[1]});
             return;
         }
@@ -530,6 +676,17 @@ private:
                 return true;
 
         return false;
+    }
+
+    // A scalar local built only from literals would be a C++ float rather than a
+    // value in the graph, and `auto d = 2.0f` breaks everything downstream of it
+    // - min(), sin() and the vector constructors all need a handle. Anchoring it
+    // with constant() gives it one without changing what it holds. Inlining a
+    // helper called with constants produces these by the handful, which is why
+    // it matters now and did not before.
+    bool needsAnchor(int node)
+    {
+        return node >= 0 && typeOf(node) == Type::Float && !mentionsAName(node);
     }
 
     // --- expressions -----------------------------------------------------
@@ -680,6 +837,26 @@ private:
 
         if (width > 0)
             return emitVectorConstructor(node, expr, width);
+
+        // `float(x)` is a conversion, and after unrolling has substituted the
+        // counter it is usually a conversion of a literal. The parentheses stay
+        // where dropping them would re-bind the expression around it.
+        if (expr.text == "float" && expr.args.size() == 1)
+        {
+            auto inner = emitExpression(expr.args[0]);
+            auto grouped = shader.expr(expr.args[0]).kind == ExprKind::Binary
+                           || shader.expr(expr.args[0]).kind == ExprKind::Ternary;
+
+            return grouped ? "(" + inner + ")" : inner;
+        }
+
+        // An integer conversion truncates, and the EDSL has neither the type nor
+        // the intrinsic to say so.
+        if (expr.text == "int" || expr.text == "uint" || expr.text == "bool")
+        {
+            report(DiagnosticKind::UnsupportedType, expr.text);
+            return "/* unsupported: " + expr.text + " */ " + emitArguments(expr);
+        }
 
         if (isTextureCall(expr.text))
         {

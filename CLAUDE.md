@@ -78,9 +78,15 @@ on a machine with no device.
 
 - `Glsl/Lexer`: tokens, comments, object-like `#define` expansion.
 - `Glsl/Parser`: a recursive-descent parser producing `Glsl::Shader` - an
-  arena of `Expr` nodes referenced by index, mirroring eacp's `ShaderGraph`.
-  It accepts a **wider** grammar than the emitter can lower, and recovers from
-  what it cannot handle, so one shader reports every gap rather than the first.
+  arena of `Expr` nodes referenced by index, mirroring eacp's `ShaderGraph`,
+  plus statement blocks and whole function bodies. It accepts a **wider**
+  grammar than the emitter can lower, and recovers from what it cannot handle,
+  so one shader reports every gap rather than the first.
+- `Glsl/Lower`: `Glsl::Shader` -> the straight-line `Glsl::Shader` the emitter
+  takes. Unrolls constant-trip-count loops, inlines helper calls, folds
+  constants and renames locals into one flat scope. What it cannot flatten it
+  reports and moves to `Shader::dropped`, which the emitter walks for
+  diagnostics and does not emit.
 - `Emit/CppEmitter`: `Glsl::Shader` -> a C++ header declaring one
   `Shadertoy::Ports::<Name> : Program`. Minimal parentheses, wrapped to 85
   columns.
@@ -88,6 +94,8 @@ on a machine with no device.
 
 A diagnostic names one missing capability (`intrinsic: atan`), never a place in
 the file: they are counted across the corpus, and the counts rank the roadmap.
+`Transpile.cpp` deduplicates them by kind, detail and line, so an unrolled loop
+reports the gap in its body once rather than once per copy.
 
 ### Runtime (`Lib/shadertoy/Runtime`)
 

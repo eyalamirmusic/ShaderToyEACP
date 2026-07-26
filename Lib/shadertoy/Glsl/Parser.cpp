@@ -18,10 +18,11 @@ bool isTypeName(std::string_view text)
            || text == "samplerCube";
 }
 
+// The keywords that open a construct with a body. `for` is parsed properly now
+// that it can be unrolled; the rest are still skipped and reported.
 bool isControlFlowKeyword(std::string_view text)
 {
-    return text == "if" || text == "for" || text == "while" || text == "do"
-           || text == "switch";
+    return text == "if" || text == "while" || text == "do" || text == "switch";
 }
 
 // The assignment operators, with the arithmetic ones carrying the operator the
@@ -61,10 +62,6 @@ public:
         auto result = ParseResult {};
         result.shader = std::move(shader);
         result.diagnostics = std::move(diagnostics);
-
-        for (const auto& statement: body)
-            result.shader.statements.add(statement);
-
         return result;
     }
 
@@ -280,7 +277,23 @@ private:
         return shader.add(Expr {ExprKind::Number, "0.0"});
     }
 
-    // --- statements ------------------------------------------------------
+    int literalOne()
+    {
+        auto node = Expr {ExprKind::Number, "1"};
+        node.value = 1.0;
+        return shader.add(std::move(node));
+    }
+
+    // --- recovery --------------------------------------------------------
+
+    // What is skipped still counts. A `break` inside an `if` is a second thing
+    // the EDSL is missing rather than a detail of the first, and the report
+    // ranks stage 5's work by how many shaders need each of them.
+    void noteJump()
+    {
+        if (check("break") || check("continue") || check("discard"))
+            report(DiagnosticKind::ControlFlow, peek().text);
+    }
 
     void skipBalanced(std::string_view open, std::string_view close)
     {
@@ -295,6 +308,8 @@ private:
                 ++depth;
             else if (check(close))
                 --depth;
+            else
+                noteJump();
 
             advance();
         }
@@ -310,56 +325,11 @@ private:
                 continue;
             }
 
+            noteJump();
             advance();
         }
 
         match(";");
-    }
-
-    // Skips a function body while still noting what is inside it.
-    //
-    // A helper cannot be lowered yet, so it is reported as a user function - but
-    // what it *contains* decides how much inlining will actually unlock. A
-    // helper full of loops needs real control flow too, and a report that
-    // stopped at "inline this" would flatter the roadmap: it would promise that
-    // stage 2 turns the shader green when stage 5 is also required.
-    void skipBodyNotingControlFlow()
-    {
-        if (!match("{"))
-            return;
-
-        auto depth = 1;
-        auto reported = Vector<std::string> {};
-
-        while (depth > 0 && !peek().isEnd())
-        {
-            if (check("{"))
-            {
-                ++depth;
-            }
-            else if (check("}"))
-            {
-                --depth;
-            }
-            else if (isControlFlowKeyword(peek().text) || check("break")
-                     || check("continue") || check("discard"))
-            {
-                auto keyword = peek().text;
-                auto alreadySeen = false;
-
-                for (const auto& seen: reported)
-                    if (seen == keyword)
-                        alreadySeen = true;
-
-                if (!alreadySeen)
-                {
-                    reported.add(keyword);
-                    report(DiagnosticKind::ControlFlow, keyword);
-                }
-            }
-
-            advance();
-        }
     }
 
     // Steps over one whole statement without recording it, so parsing resumes
@@ -407,17 +377,21 @@ private:
         }
     }
 
+    // --- statements ------------------------------------------------------
+
+    // `int` and `uint` are deliberately silent here. A loop counter is the
+    // overwhelming majority of them and it becomes a literal the moment the loop
+    // unrolls, so reporting the type at the parse would fill the coverage table
+    // with gaps that lowering closes on its own; the ones that survive are
+    // reported there instead.
     void parseDeclaration(Vector<Statement>& into)
     {
         match("const");
 
         auto type = advance().text;
 
-        if (type == "int" || type == "bool" || type == "uint"
-            || type.rfind("ivec", 0) == 0 || type.rfind("bvec", 0) == 0)
-            report(DiagnosticKind::UnsupportedType, type);
-
-        if (type == "mat2" || type == "mat3")
+        if (type == "bool" || type.rfind("ivec", 0) == 0
+            || type.rfind("bvec", 0) == 0 || type == "mat2" || type == "mat3")
             report(DiagnosticKind::UnsupportedType, type);
 
         do
@@ -451,7 +425,184 @@ private:
         expect(";");
     }
 
-    void parseStatement()
+    bool startsDeclaration() const
+    {
+        return check("const") || (isTypeName(peek().text) && peek(1).isIdentifier());
+    }
+
+    // An assignment, an increment, or a call standing on its own. Shared with
+    // the clauses of a `for` header, which are the same statements without the
+    // trailing semicolon.
+    void parseSimpleStatement(Vector<Statement>& into, bool expectSemicolon)
+    {
+        auto line = peek().line;
+
+        for (auto prefix: {"++", "--"})
+        {
+            if (!check(prefix))
+                continue;
+
+            advance();
+            auto target = parsePostfix();
+            addIncrement(into, target, prefix[0] == '+' ? "+" : "-", line);
+
+            if (expectSemicolon)
+                expect(";");
+
+            return;
+        }
+
+        auto target = parsePostfix();
+
+        for (auto postfix: {"++", "--"})
+        {
+            if (!check(postfix))
+                continue;
+
+            advance();
+            addIncrement(into, target, postfix[0] == '+' ? "+" : "-", line);
+
+            if (expectSemicolon)
+                expect(";");
+
+            return;
+        }
+
+        if (isAssignmentOperator(peek().text))
+        {
+            auto op = compoundOperator(advance().text);
+            auto value = parseExpression();
+
+            if (expectSemicolon)
+                expect(";");
+
+            addAssignment(into, target, op, value, line);
+            return;
+        }
+
+        // A call with its result discarded: a helper that writes through an out
+        // parameter, which lowering inlines the same way as any other.
+        if (shader.expr(target).kind == ExprKind::Call)
+        {
+            auto statement = Statement {StatementKind::Call};
+            statement.name = shader.expr(target).text;
+            statement.value = target;
+            statement.line = line;
+            into.add(std::move(statement));
+
+            if (expectSemicolon)
+                expect(";");
+
+            return;
+        }
+
+        report(DiagnosticKind::ParseError,
+               "expression statement '" + peek().text + "'",
+               line);
+        skipToSemicolon();
+    }
+
+    void addIncrement(Vector<Statement>& into,
+                      int target,
+                      const std::string& op,
+                      int line)
+    {
+        addAssignment(into, target, op, literalOne(), line);
+    }
+
+    void addAssignment(Vector<Statement>& into,
+                       int target,
+                       const std::string& op,
+                       int value,
+                       int line)
+    {
+        const auto& targetNode = shader.expr(target);
+
+        if (targetNode.kind != ExprKind::Identifier)
+        {
+            report(DiagnosticKind::ComponentAssignment,
+                   targetNode.kind == ExprKind::Member ? "." + targetNode.text
+                                                       : "indexed target",
+                   line);
+
+            auto dropped = Statement {StatementKind::Unsupported, "component"};
+            dropped.line = line;
+            into.add(std::move(dropped));
+            return;
+        }
+
+        auto statement = Statement {StatementKind::Assign};
+        statement.name = targetNode.text;
+        statement.op = op;
+        statement.value = value;
+        statement.line = line;
+        into.add(std::move(statement));
+    }
+
+    void parseFor(Vector<Statement>& into)
+    {
+        auto statement = Statement {StatementKind::For};
+        statement.line = peek().line;
+
+        advance(); // 'for'
+        expect("(");
+
+        auto init = Block {};
+
+        if (!match(";"))
+        {
+            if (startsDeclaration())
+                parseDeclaration(init.statements);
+            else
+                parseSimpleStatement(init.statements, true);
+        }
+
+        statement.init = shader.add(std::move(init));
+
+        if (!check(";"))
+            statement.condition = parseExpression();
+
+        expect(";");
+
+        auto step = Block {};
+
+        if (!check(")"))
+        {
+            do
+            {
+                parseSimpleStatement(step.statements, false);
+            } while (match(","));
+        }
+
+        statement.step = shader.add(std::move(step));
+        expect(")");
+
+        statement.body = parseBody();
+        into.add(std::move(statement));
+    }
+
+    // A brace-delimited block, or the single statement a loop header is allowed
+    // to stand in for.
+    int parseBody()
+    {
+        auto block = Block {};
+
+        if (match("{"))
+        {
+            while (!check("}") && !peek().isEnd())
+                parseStatement(block.statements);
+
+            expect("}");
+        }
+        else
+        {
+            parseStatement(block.statements);
+        }
+
+        return shader.add(std::move(block));
+    }
+
+    void parseStatement(Vector<Statement>& into)
     {
         if (peek().isEnd())
             return;
@@ -466,26 +617,48 @@ private:
             advance();
 
             while (!check("}") && !peek().isEnd())
-                parseStatement();
+                parseStatement(into);
 
             expect("}");
             return;
         }
 
-        if (isControlFlowKeyword(peek().text))
+        if (check("for"))
         {
-            report(DiagnosticKind::ControlFlow, peek().text);
-            skipControlFlow();
+            parseFor(into);
             return;
         }
 
-        for (auto keyword: {"discard", "break", "continue"})
+        if (isControlFlowKeyword(peek().text) || check("discard"))
         {
-            if (!check(keyword))
-                continue;
+            auto statement = Statement {StatementKind::Unsupported, peek().text};
+            statement.line = peek().line;
+            report(DiagnosticKind::ControlFlow, statement.name);
 
-            report(DiagnosticKind::ControlFlow, keyword);
+            if (statement.name == "discard")
+            {
+                advance();
+                skipToSemicolon();
+            }
+            else
+            {
+                skipControlFlow();
+            }
+
+            into.add(std::move(statement));
+            return;
+        }
+
+        // Kept rather than reported: whether a jump is a gap depends on the loop
+        // around it, which only lowering knows.
+        if (check("break") || check("continue"))
+        {
+            auto statement = Statement {check("break") ? StatementKind::Break
+                                                       : StatementKind::Continue};
+            statement.line = peek().line;
+            advance();
             skipToSemicolon();
+            into.add(std::move(statement));
             return;
         }
 
@@ -499,54 +672,17 @@ private:
                 statement.value = parseExpression();
 
             expect(";");
-            body.add(std::move(statement));
+            into.add(std::move(statement));
             return;
         }
 
-        if (check("const") || (isTypeName(peek().text) && peek(1).isIdentifier()))
+        if (startsDeclaration())
         {
-            parseDeclaration(body);
+            parseDeclaration(into);
             return;
         }
 
-        parseAssignment();
-    }
-
-    void parseAssignment()
-    {
-        auto line = peek().line;
-        auto target = parsePostfix();
-
-        if (!isAssignmentOperator(peek().text))
-        {
-            report(DiagnosticKind::ParseError,
-                   "expression statement '" + peek().text + "'",
-                   line);
-            skipToSemicolon();
-            return;
-        }
-
-        auto op = compoundOperator(advance().text);
-        auto value = parseExpression();
-        expect(";");
-
-        const auto& targetNode = shader.expr(target);
-
-        if (targetNode.kind != ExprKind::Identifier)
-        {
-            report(DiagnosticKind::ComponentAssignment,
-                   targetNode.kind == ExprKind::Member ? "." + targetNode.text
-                                                       : "indexed target",
-                   line);
-            return;
-        }
-
-        auto statement = Statement {StatementKind::Assign};
-        statement.name = targetNode.text;
-        statement.op = op;
-        statement.value = value;
-        statement.line = line;
-        body.add(std::move(statement));
+        parseSimpleStatement(into, true);
     }
 
     // --- top level -------------------------------------------------------
@@ -585,9 +721,58 @@ private:
         expect("{");
 
         while (!check("}") && !peek().isEnd())
-            parseStatement();
+            parseStatement(shader.statements);
 
         expect("}");
+    }
+
+    // A helper, kept whole. Lowering inlines it at every call site; what it
+    // reports if it cannot is the function's name, which is what the coverage
+    // table groups on.
+    void parseFunction(std::string returnType, std::string name)
+    {
+        auto function = Function {};
+        function.line = peek().line;
+        function.returnType = std::move(returnType);
+        function.name = std::move(name);
+
+        expect("(");
+
+        while (!check(")") && !peek().isEnd())
+        {
+            auto parameter = Parameter {};
+
+            match("const");
+
+            if (check("out") || check("inout"))
+            {
+                parameter.writesBack = true;
+                advance();
+            }
+            else
+            {
+                match("in");
+            }
+
+            parameter.type = advance().text;
+
+            if (peek().isIdentifier())
+                parameter.name = advance().text;
+
+            if (!parameter.name.empty())
+                function.parameters.add(std::move(parameter));
+
+            if (!match(","))
+                break;
+        }
+
+        expect(")");
+
+        if (match(";"))
+            return; // a forward declaration says nothing the body will not
+
+        function.body = parseBody();
+        shader.functions.add(std::move(function));
     }
 
     void parseTranslationUnit()
@@ -609,30 +794,20 @@ private:
 
             if (isFunction)
             {
-                advance(); // return type
+                auto returnType = advance().text;
                 auto name = advance().text;
 
                 if (name == "mainImage")
-                {
                     parseMainImage();
-                    continue;
-                }
-
-                report(DiagnosticKind::UserFunction, name);
-                skipBalanced("(", ")");
-
-                if (check("{"))
-                    skipBodyNotingControlFlow();
                 else
-                    match(";");
+                    parseFunction(std::move(returnType), std::move(name));
 
                 continue;
             }
 
-            if (check("const")
-                || (isTypeName(peek().text) && peek(1).isIdentifier()))
+            if (startsDeclaration())
             {
-                parseDeclaration(globals);
+                parseDeclaration(shader.globals);
                 continue;
             }
 
@@ -642,18 +817,11 @@ private:
 
         if (!shader.hasMainImage)
             report(DiagnosticKind::ParseError, "no mainImage function", 0);
-
-        // Globals lead, whatever order they appeared in relative to mainImage:
-        // a const the body reads has to be in scope by the time it is read.
-        for (const auto& global: globals)
-            shader.statements.add(global);
     }
 
     Vector<Token> tokens;
     Vector<Diagnostic> diagnostics;
     Shader shader;
-    Vector<Statement> globals;
-    Vector<Statement> body;
     int position = 0;
 };
 } // namespace

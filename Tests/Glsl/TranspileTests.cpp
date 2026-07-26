@@ -178,12 +178,14 @@ auto tParameterNames = test("Glsl/keepsParameterNames") = []
 };
 
 // The point of the whole exercise: one shader reports every wall it hits, not
-// the first. A `for` loop does not stop the atan below it from being counted,
-// because the coverage table is only useful if it sees everything.
+// the first. A loop that will not unroll does not stop the atan below it from
+// being counted, because the coverage table is only useful if it sees
+// everything.
 auto tCollectsEveryGap = test("Glsl/collectsEveryGap") = []
 {
     auto result = convert("    vec3 col = vec3(0.0);\n"
-                          "    for (int i = 0; i < 8; i++) { col += 0.1; }\n"
+                          "    for (float t = 0.0; t < iTime; t += 1.0)\n"
+                          "        col += 0.1;\n"
                           "    col += atan(fragCoord.x);\n"
                           "    if (col.x > 1.0) { col = vec3(1.0); }\n"
                           "    fragColor = vec4(col, 1.0);");
@@ -195,6 +197,93 @@ auto tCollectsEveryGap = test("Glsl/collectsEveryGap") = []
 
     // Recovery left the surrounding shader intact.
     check(contains(result.code, "auto fragColor = float4(col, 1.0f);"));
+};
+
+// A loop bounded by a constant becomes that many copies of its body, with the
+// counter substituted as a literal - so nothing about `int` survives to be a
+// gap, and the locals the body declares are renamed to share one C++ scope.
+auto tUnrollsConstantLoop = test("Glsl/unrollsConstantLoop") = []
+{
+    auto result = convert("    vec3 col = vec3(0.0);\n"
+                          "    for (int i = 0; i < 3; i++)\n"
+                          "    {\n"
+                          "        float wave = sin(fragCoord.x + float(i));\n"
+                          "        col += wave;\n"
+                          "    }\n"
+                          "    fragColor = vec4(col, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "auto wave = sin(fragCoord.x() + 0.0f);"));
+    check(contains(result.code, "auto wave_2 = sin(fragCoord.x() + 1.0f);"));
+    check(contains(result.code, "auto wave_3 = sin(fragCoord.x() + 2.0f);"));
+    check(contains(result.code, "col = col + wave_3;"));
+    check(!contains(result.code, "for"));
+};
+
+// A loop the transpiler cannot count is stage 5's, and saying so is the whole
+// value of the row: the body is still walked, so what it needs is counted too.
+auto tDynamicLoopIsReported = test("Glsl/dynamicLoopStillCounted") = []
+{
+    auto result = convert("    vec3 col = vec3(0.0);\n"
+                          "    for (float t = 0.0; t < iTime; t += 1.0)\n"
+                          "        col += exp(t);\n"
+                          "    fragColor = vec4(col, 1.0);");
+
+    check(reports(result, Glsl::DiagnosticKind::ControlFlow, "for"));
+    check(reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, "exp"));
+};
+
+// Nested loops multiply out, the inner one unrolling once per copy of the
+// outer.
+auto tUnrollsNestedLoops = test("Glsl/unrollsNestedLoops") = []
+{
+    auto result = convert("    float total = 0.0;\n"
+                          "    for (int y = 0; y < 2; y++)\n"
+                          "        for (int x = 0; x < 2; x++)\n"
+                          "            total += float(x) * float(y);\n"
+                          "    fragColor = vec4(total, 0.0, 0.0, 1.0);");
+
+    check(result.ok());
+    check(countOf(result, Glsl::DiagnosticKind::ControlFlow) == 0);
+
+    // Four copies, and the products of the two counters folded away with them.
+    auto assignments = std::size_t {0};
+
+    for (auto at = result.code.find("total = total"); at != std::string::npos;
+         at = result.code.find("total = total", at + 1))
+        ++assignments;
+
+    check(assignments == 4);
+};
+
+// A jump is what an unrollable loop cannot have, and both it and the loop are
+// named: closing one without the other leaves the shader where it was.
+auto tLoopWithBreak = test("Glsl/loopWithBreakIsNotUnrolled") = []
+{
+    auto result = convert("    float d = 0.0;\n"
+                          "    for (int i = 0; i < 8; i++)\n"
+                          "    {\n"
+                          "        d += 0.1;\n"
+                          "        if (d > 0.5) break;\n"
+                          "    }\n"
+                          "    fragColor = vec4(d, 0.0, 0.0, 1.0);");
+
+    check(reports(result, Glsl::DiagnosticKind::ControlFlow, "for"));
+    check(reports(result, Glsl::DiagnosticKind::ControlFlow, "break"));
+    check(reports(result, Glsl::DiagnosticKind::ControlFlow, "if"));
+};
+
+// However many copies a loop makes of a gap, it is one gap at one place in the
+// file: a count that grew with the trip count would rank a shader by how long
+// its loops are.
+auto tUnrollingDoesNotInflate = test("Glsl/unrollingCountsGapsOnce") = []
+{
+    auto result = convert("    float total = 0.0;\n"
+                          "    for (int i = 0; i < 16; i++)\n"
+                          "        total += exp(float(i));\n"
+                          "    fragColor = vec4(total, 0.0, 0.0, 1.0);");
+
+    check(countOf(result, Glsl::DiagnosticKind::UnsupportedIntrinsic) == 1);
 };
 
 // Named so the report groups two shaders blocked by the same builtin together.
@@ -209,11 +298,71 @@ auto tIntrinsicNames = test("Glsl/intrinsicsAreNamed") = []
     }
 };
 
-// A helper function is stage 2 work, and until then it is reported by name
-// rather than silently emitted as an unresolved call.
+// A helper whose body is one expression is replaced by that expression. An
+// argument that is a name or a literal is substituted; anything the body would
+// otherwise evaluate twice is bound to a local of its own first.
+auto tInlinesHelpers = test("Glsl/inlinesHelpers") = []
+{
+    auto result =
+        transpile("float sdBox(vec2 p, float r) { return length(p) - r; }\n"
+                  "void mainImage(out vec4 o, in vec2 c)\n"
+                  "{\n"
+                  "    float d = sdBox(c, 0.5);\n"
+                  "    float e = sdBox(c * 2.0, 0.5);\n"
+                  "    o = vec4(d, e, 0.0, 1.0);\n"
+                  "}\n",
+                  "TestShader");
+
+    check(result.ok());
+    check(contains(result.code, "auto d = length(c) - 0.5f;"));
+    check(contains(result.code, "auto p = c * 2.0f;"));
+    check(contains(result.code, "auto e = length(p) - 0.5f;"));
+};
+
+// Helpers calling helpers unwind all the way down.
+auto tInlinesNestedHelpers = test("Glsl/inlinesNestedHelpers") = []
+{
+    auto result = transpile("float inner(float x) { return x * x; }\n"
+                            "float outer(float x) { return inner(x) + 1.0; }\n"
+                            "void mainImage(out vec4 o, in vec2 c)\n"
+                            "{\n"
+                            "    o = vec4(outer(c.x), 0.0, 0.0, 1.0);\n"
+                            "}\n",
+                            "TestShader");
+
+    check(result.ok());
+    check(contains(result.code, "auto x = c.x();"));
+    check(contains(result.code, "float4(x * x + 1.0f, 0.0f, 0.0f, 1.0f)"));
+};
+
+// An inout parameter is the other way a helper hands a value back, and the
+// caller sees the write.
+auto tInlinesOutParameters = test("Glsl/inlinesOutParameters") = []
+{
+    auto result = transpile("void twice(inout vec2 p) { p = p * 2.0; }\n"
+                            "void mainImage(out vec4 o, in vec2 c)\n"
+                            "{\n"
+                            "    vec2 uv = c;\n"
+                            "    twice(uv);\n"
+                            "    o = vec4(uv, 0.0, 1.0);\n"
+                            "}\n",
+                            "TestShader");
+
+    check(result.ok());
+    check(contains(result.code, "uv = p;"));
+    check(contains(result.code, "auto o = float4(uv, 0.0f, 1.0f);"));
+};
+
+// A helper the port cannot flatten is reported by name rather than silently
+// emitted as an unresolved call - and what is inside it is counted too, so the
+// table never promises that inlining alone would turn the shader green.
 auto tUserFunctions = test("Glsl/userFunctionsReported") = []
 {
-    auto result = transpile("float sdBox(vec2 p) { return length(p); }\n"
+    auto result = transpile("float sdBox(vec2 p)\n"
+                            "{\n"
+                            "    if (p.x > 0.0) return 1.0;\n"
+                            "    return atan(p.y);\n"
+                            "}\n"
                             "void mainImage(out vec4 o, in vec2 p)\n"
                             "{\n"
                             "    o = vec4(sdBox(p), 0.0, 0.0, 1.0);\n"
@@ -221,6 +370,8 @@ auto tUserFunctions = test("Glsl/userFunctionsReported") = []
                             "TestShader");
 
     check(reports(result, Glsl::DiagnosticKind::UserFunction, "sdBox"));
+    check(reports(result, Glsl::DiagnosticKind::ControlFlow, "if"));
+    check(reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, "atan"));
 };
 
 // Texture channels arrive with stage 4; until then they are their own category

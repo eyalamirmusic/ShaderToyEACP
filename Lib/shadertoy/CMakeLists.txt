@@ -9,6 +9,7 @@ target_link_libraries(shadertoy-glsl PUBLIC eacp-core)
 target_sources(shadertoy-glsl PRIVATE
         Glsl/Lexer.cpp
         Glsl/Parser.cpp
+        Glsl/Lower.cpp
         Emit/CppEmitter.cpp
         Transpile.cpp)
 
