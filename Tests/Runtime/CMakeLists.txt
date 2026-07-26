@@ -1,6 +1,7 @@
 nano_add_executable(RuntimeTests
         NO_MAIN
         SOURCES
+            ChannelTests.cpp
             ProgramTests.cpp
             PortTests.cpp
             TestMain.cpp
@@ -16,3 +17,8 @@ shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Voro
 # exp, rsqrt, sign and four-component swizzles in Kaleido.
 shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Checker.glsl NAME Checker)
 shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Kaleido.glsl NAME Kaleido)
+
+# Stage 4: one channel sampled the ordinary way in Tunnel, and all three reads
+# plus iChannelResolution across two channels in Channels.
+shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Tunnel.glsl NAME Tunnel)
+shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Channels.glsl NAME Channels)

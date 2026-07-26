@@ -446,13 +446,89 @@ auto tUserFunctions = test("Glsl/userFunctionsReported") = []
         reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, "determinant"));
 };
 
-// Texture channels arrive with stage 4; until then they are their own category
-// in the report rather than an unresolved name.
-auto tChannels = test("Glsl/channelsReported") = []
+// A channel read is a sample, and the port declares the channel it read. The
+// declaration is the point: every texture a port declares is one the draw has
+// to bind, so a shader that samples one channel must not carry four.
+auto tChannels = test("Glsl/channelsConvert") = []
 {
-    auto result = convert("    fragColor = texture(iChannel0, fragCoord);");
+    auto result = convert("    vec2 uv = fragCoord / iResolution.xy;\n"
+                          "    fragColor = texture(iChannel2, uv);");
 
-    check(reports(result, Glsl::DiagnosticKind::UnsupportedTexture, "texture"));
+    check(result.ok());
+    check(contains(result.code, "Channel iChannel2;"));
+    check(contains(result.code, "SHADERTOY_UNIFORMS(iChannel2)"));
+    check(contains(result.code, "sample(iChannel2, uv)"));
+    check(!contains(result.code, "iChannel0"));
+};
+
+// The other two reads. textureLod names the level rather than taking the one
+// the derivatives imply; texelFetch addresses texels rather than the unit
+// square, which is what iChannelResolution is there to make possible - and the
+// ivec2 it is spelled with has no EDSL type, so the coordinate crosses as the
+// float2 the fetch truncates anyway.
+auto tChannelReads = test("Glsl/levelAndFetchConvert") = []
+{
+    auto result =
+        convert("    vec2 uv = fragCoord / iResolution.xy;\n"
+                "    vec2 texel = iChannelResolution[0].xy * uv;\n"
+                "    vec4 near = textureLod(iChannel0, uv, 0.0);\n"
+                "    vec4 exact = texelFetch(iChannel0, ivec2(texel), 0);\n"
+                "    fragColor = near + exact;");
+
+    check(result.ok());
+    check(contains(result.code, "auto texel = iChannel0.resolution.xy() * uv;"));
+    check(contains(result.code, "sample(iChannel0, uv, 0.0f)"));
+    check(contains(result.code, "fetch(iChannel0, texel)"));
+
+    // Two scalars rather than a vector to convert, which is the other spelling
+    // of the same coordinate.
+    auto pair = convert("    fragColor = texelFetch(iChannel0, ivec2(4, 9), 0);");
+
+    check(pair.ok());
+    check(contains(pair.code, "fetch(iChannel0, float2(constant(4.0f), 9.0f))"));
+};
+
+// What the channels do not reach. A texture with one level cannot be read at
+// another, and neither backend is handed the gradients or the dimensions
+// through an expression, so each stays a row in the report rather than emitting
+// something that would compile and be wrong.
+auto tChannelGaps = test("Glsl/channelGapsReported") = []
+{
+    auto biased = convert("    fragColor = texture(iChannel0, fragCoord, 1.0);");
+    check(reports(biased, Glsl::DiagnosticKind::UnsupportedTexture, "texture bias"));
+
+    auto gradient = convert("    fragColor = textureGrad(iChannel0, fragCoord, "
+                            "fragCoord, fragCoord);");
+    check(
+        reports(gradient, Glsl::DiagnosticKind::UnsupportedTexture, "textureGrad"));
+
+    auto size =
+        convert("    fragColor = vec4(textureSize(iChannel0, 0), 0.0, 1.0);");
+    check(reports(size, Glsl::DiagnosticKind::UnsupportedTexture, "textureSize"));
+
+    auto level =
+        convert("    fragColor = texelFetch(iChannel0, ivec2(fragCoord), 2);");
+    check(reports(
+        level, Glsl::DiagnosticKind::UnsupportedTexture, "texelFetch level"));
+};
+
+// A channel only a statement lowering threw away reads is not one the port
+// declares: it would be a texture every draw has to bind and the shader never
+// looks at. The gap inside that statement is still counted, the way every other
+// gap in dropped code is.
+auto tDroppedChannels = test("Glsl/droppedChannelsAreNotDeclared") = []
+{
+    auto result = transpile("void mainImage(out vec4 fragColor, in vec2 fragCoord)\n"
+                            "{\n"
+                            "    fragColor = texture(iChannel0, fragCoord);\n"
+                            "    for (int i = 0; i < int(iTime); i++)\n"
+                            "        fragColor += texture(iChannel1, fragCoord);\n"
+                            "}\n",
+                            "TestShader");
+
+    check(contains(result.code, "Channel iChannel0;"));
+    check(!contains(result.code, "Channel iChannel1;"));
+    check(reports(result, Glsl::DiagnosticKind::ControlFlow, "for"));
 };
 
 // Generated headers sit in a project built to eacp's style, so they hold to its

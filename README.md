@@ -11,11 +11,11 @@ a matter of opinion into a measurement. Every shader that fails to convert names
 a specific gap, and the number of shaders blocked on each gap is what decides
 which one to close next.
 
-> **⚠️ Early days.** Stages 0 to 3 are done: straight-line GLSL converts,
+> **⚠️ Early days.** Stages 0 to 4 are done: straight-line GLSL converts,
 > constant-trip-count loops unroll, helper functions inline, the intrinsic and
-> swizzle gaps are closed, and the generated C++ compiles and runs. Branches,
-> texture channels and data-dependent loops are still ahead — see the plan and
-> the coverage table below.
+> swizzle gaps are closed, texture channels are sampled, and the generated C++
+> compiles and runs. Branches and data-dependent loops are still ahead — see the
+> plan and the coverage table below.
 
 ## Why this works better than it looks like it should
 
@@ -50,14 +50,17 @@ Lib/shadertoy/Glsl/       lexer, parser, AST, diagnostics  (no GPU dependency)
                           Lower (unrolling, inlining, constant folding)
 Lib/shadertoy/Emit/       the AST -> C++ EDSL emitter
 Lib/shadertoy/Runtime/    Program (the Shadertoy uniform set + fullscreen pass)
+                          Channel (a texture and the size published beside it)
                           ShaderView (clock, pointer, resolution, redraw)
 Tools/Transpile/          the shadertoy-transpile CLI
 Corpus/                   shaders the coverage report is measured against
 Apps/Plasma/              a hand port, for comparison
 Apps/PlasmaPort/          the same shader, converted from GLSL at build time
+Apps/TunnelPort/          a converted port that reads a texture channel
 Tests/Glsl/               lowering and diagnostics
 Tests/Runtime/            vertex layout, uniform block layout, generated stages,
-                          and corpus ports compiled from their GLSL by the build
+                          corpus ports compiled from their GLSL by the build, and
+                          rendered read-back of a bound channel
 ```
 
 A port looks like this — hand-written or generated, the shape is the same:
@@ -83,7 +86,30 @@ struct PlasmaShader final : Shadertoy::Program
 `fragCoord` arrives in pixels with the origin at the bottom-left, exactly as
 Shadertoy hands it over. Two deviations from the real uniform set, both because
 the EDSL has no integer type usable in float arithmetic yet: `iFrame` is a float,
-and `iDate` is absent. Texture channels arrive with stage 4.
+and `iDate` is absent.
+
+A port that reads a texture channel declares the ones it reads and no others,
+since every declared texture is a binding the draw has to satisfy:
+
+```cpp
+struct TunnelShader final : Shadertoy::Program
+{
+    Channel iChannel0;
+
+    SHADERTOY_UNIFORMS(iChannel0)
+
+    TunnelShader() { compile(); }
+
+    GPU::Float4 mainImage(const GPU::Float2& fragCoord) override
+    {
+        return sample(iChannel0, fragCoord / iResolution.xy());
+    }
+};
+```
+
+`shader.iChannel0 = texture` points the channel at an image and publishes its
+size as `iChannelResolution` in the same move, so a shader fetching texels
+cannot be reading one image while scaling by the dimensions of another.
 
 ## The plan
 
@@ -137,7 +163,22 @@ It found the first eacp gap the corpus paid for, too — see below.
 Three of those turned out not to be mechanical at all, which is the return on
 measuring rather than guessing — see below.
 
-**Stage 4 — texture channels.** `iChannel0..3`, `texelFetch`, `textureLod`.
+**Stage 4 — texture channels.** *Done.* `iChannel0..3` and the three ways a
+Shadertoy reads one: `texture`, `textureLod` and `texelFetch`, plus
+`iChannelResolution`, which is the only array a Shadertoy indexes and needs no
+array type because it is only ever indexed by a literal.
+
+A channel is a `Channel` member the port declares — the texture and the size the
+page publishes beside it, as one value, because assigning the texture fills
+both. It carries Shadertoy's sampling rather than eacp's default (bilinear and
+wrapping, not nearest and clamped), which is what a shader scrolling a
+coordinate past 1 expects.
+
+This is the first stage whose result nothing on the CPU can observe: a channel
+that never reaches the draw renders black and reports nothing. So it is also the
+stage that started the rendered read-back layer — `Tests/Runtime/ChannelTests`
+draws a two-texel texture through a port and checks which half of the frame each
+texel landed in.
 
 **Stage 5 — real control flow.** `Var`, `Select`, `If`, `While` in eacp's shader
 IR, driven by the shaders unrolling cannot reach: `break`-on-hit raymarchers,
@@ -171,6 +212,11 @@ shadertoy_add_port(PlasmaPort GLSL Plasma.glsl NAME Plasma)
 Shadertoy::Ports::Plasma shader;   // ready to hand to a ShaderView
 ```
 
+A port that reads a channel needs one thing more from the app: the image. That
+is what `Apps/TunnelPort` is — the same build step over `Corpus/Tunnel.glsl`,
+plus a texture generated at startup and assigned to the channel the generated
+struct declared.
+
 Measure the corpus — this is the exact command the table below comes from:
 
 ```bash
@@ -180,8 +226,8 @@ build/Tools/Transpile/shadertoy-transpile --report Corpus/*.glsl \
 
 ## The coverage table
 
-Over the seven shaders in `Corpus/` plus `Apps/PlasmaPort/Plasma.glsl`, as of
-the end of stage 3. `Shaders` is the number blocked by that gap, which is what
+Over the eight shaders in `Corpus/` plus `Apps/PlasmaPort/Plasma.glsl`, as of
+the end of stage 4. `Shaders` is the number blocked by that gap, which is what
 the roadmap is sorted by:
 
 | Blocker | Shaders | Occurrences |
@@ -189,27 +235,30 @@ the roadmap is sorted by:
 | control-flow: break | 1 | 1 |
 | control-flow: if | 1 | 1 |
 | control-flow: for | 1 | 1 |
-| texture: texture | 1 | 1 |
 | user-function: march | 1 | 1 |
 
-6 of 8 shaders converted with no gaps.
+8 of 9 shaders converted with no gaps.
 
-Every intrinsic and swizzle row is gone, and what is left is two shaders and two
-stages: `Tunnel.glsl` wants a texture channel (stage 4), and `Raymarch.glsl`
-wants real control flow (stage 5) — the `user-function: march` row is that same
-`break` seen from outside, a helper the port had to leave as a call because the
-loop in it cannot be unrolled.
+Every intrinsic, swizzle and texture row is gone, and what is left is one shader
+and one stage: `Raymarch.glsl` wants real control flow (stage 5). The
+`user-function: march` row is that same `break` seen from outside, a helper the
+port had to leave as a call because the loop in it cannot be unrolled.
 
 `Kaleido.glsl` was added with stage 3 and is the shader that measures it: a
 `mat2` rotation built inline, polar coordinates through the two-argument `atan`,
 `mod` tiling, `exp` falloff, `inversesqrt` and `sign` in the shaping, and
-swizzles of every width up to `.wzyx`. It converts with nothing left over, which
-is a claim only worth making because `Tests/Runtime` then compiles it.
+swizzles of every width up to `.wzyx`.
+
+`Channels.glsl` is stage 4's, and does the same for the three channel reads at
+once: `texture` through the sampler, `textureLod` at a level it names itself,
+and `texelFetch` at coordinates scaled by `iChannelResolution`. Both convert
+with nothing left over, which is a claim only worth making because
+`Tests/Runtime` then compiles them — and, now, renders one.
 
 The corpus is still far too small for these counts to rank anything. What it
-establishes is that the measurement works end to end — and stage 3 is the first
-time it paid for itself, by turning three assumptions into bugs before they
-shipped.
+establishes is that the measurement works end to end — and it has now paid for
+itself twice, turning three assumptions into bugs in stage 3 and three more in
+stage 4 before any of them shipped.
 
 ## What this has already changed in eacp
 
@@ -256,6 +305,31 @@ cannot correct. `float4x4`, which both languages agree on, stays the matrix to
 send. `ShaderBuilder::uniform<T>()` static_asserts this rather than leaving it
 to a comment.
 
+**Two of the three channel reads had no node at all** (stage 4). `sample()`
+existed; the level-selecting form and the texel read did not, and both are
+exactly where the two backends stop agreeing on syntax. Metal passes the level
+to the same `sample()` call, HLSL has a separate `SampleLevel` for it; Metal's
+texel read is `read()` and D3D's is `Load()`. One `Sample` node with an optional
+second argument and one `Fetch` node put both behind one spelling each, so a
+shader says it once. Both are pinned by codegen tests that check the emitted
+text on both backends and by one that compiles it.
+
+**A texel read has no integer vector to arrive in, and the two backends
+disagree on its sign** (stage 4). MSL's `read` takes a `uint2`, HLSL's `Load`
+takes an `int3`. The EDSL has no integer vector, so the coordinate crosses as a
+`Float2` — which is no loss, since GLSL's `ivec2` conversion truncates towards
+zero and so does every conversion on the way down. The sign is the part worth
+recording: converting the float straight to `uint2` on Metal makes a negative
+coordinate undefined there while HLSL reads a defined zero, so eacp emits
+`uint2(int2(c))` and both backends read zero for the same inputs.
+
+**A literal mip level needed a `ShaderBuilder` in scope** (stage 4).
+`textureLod(ch, uv, 0.0)` is most of the uses of the level there are, and `0.0f`
+is a C++ float rather than a value in the graph — the same wall `float d = 2.0`
+hits. Every other case anchors it with `constant()`, which only a program has.
+Here the *texture* already carries the graph, so eacp takes the literal directly
+and the port spells it the way the GLSL did.
+
 Stage 3 also found a bug on this side of the fence rather than in eacp: the
 emitter's line-wrapping path rebuilt a call's head from the *GLSL* name, so a
 wrapped `inversesqrt` came back as `inversesqrt` instead of `rsqrt`. It had
@@ -275,12 +349,18 @@ list the table above is gradually replacing with measured counts.
 | `Float2x2`/`Float3x3` cannot be uniforms: MSL and HLSL pack them to different sizes, which no padding between fields can bridge. `Float4x4` is unaffected | `UniformLayout.h` |
 | A vector built only from literals is rejected — `ComponentsFor` needs one handle to take a graph from, so `vec3(0.0)` has no direct spelling. A scalar has the same problem: `float d = 2.0` is a C++ float rather than a value, and ports anchor both with `constant()` | `ShaderValue.h` |
 | No app-facing render-to-texture (`OffscreenTarget` is snapshot-only) | `Frame.h` |
-| Texture formats are 8-bit only; no float/half, no mips | `Texture.h` |
-| `sample()` is fragment-stage only, as are `dfdx`/`dfdy`/`fwidth` | `ShaderValue.h` |
+| Texture formats are 8-bit only; no float/half, and no mips — so a texture has one level and `sample(t, uv, level)` reads it whatever level it asks for | `Texture.h` |
+| A texture is declared into the fragment signature only, so nothing sampled reaches the vertex stage — as with `dfdx`/`dfdy`/`fwidth`, which are fragment-bound in the language too | `ShaderEmitter.cpp` |
+| No `textureSize`: HLSL spells it `GetDimensions`, which writes through out parameters rather than returning, and the emitter is an expression printer. A Shadertoy reads `iChannelResolution` instead, which the runtime fills from the bound texture | `ShaderValue.h` |
+| No sampling bias and no explicit-gradient sample (`textureGrad`) | `ShaderValue.h` |
 
 Closed by stage 3: the intrinsic row (all twenty-one of them), the swizzle row
 (`.zw` and `.yx` were the measured cases; all 340 orderings are there now), and
 `mat2`/`mat3` as expression types.
+
+Closed by stage 4: the sampling row — `sample()` at a chosen level and `fetch()`
+at texel coordinates, both spelled per backend from one node each. What is left
+of textures is above: no mips, no float formats, and no vertex-stage sample.
 
 ## Validation
 
@@ -294,12 +374,18 @@ instantiates the ports, so a header that reports no gaps but that the EDSL will
 not take is a failing build rather than a clean report. This is what found the
 missing scalar broadcast above.
 
-**Reference images.** *Ahead.* Render at a fixed `iTime` into an off-screen
-target and diff against a golden PNG within a tolerance; eacp already has the
-read-back path this rides on (`GPUSnapshotTests`). This is the layer that catches
-a port that compiles but is subtly wrong — integer division, `pow` with a
-negative base, `round` on an exact half, and whether a `mat2` really came out
-column-major on both backends.
+**Rendered pixels.** *Started, in stage 4.* `Tests/Runtime/ChannelTests` renders
+a port off-screen through `View::renderToImage` and reads the frame back. It
+exists because the whole of stage 4 is invisible to the other two layers: a
+channel that never reaches the draw compiles cleanly, reports nothing, and
+renders black. Two texels — red then green — through a sampled channel, a
+fetched one and a transpiled port say which texel each half of the frame got.
+
+What is still ahead is the golden-image half of it: render at a fixed `iTime`
+and diff against a stored PNG within a tolerance, which is the layer that
+catches a port that compiles but is subtly wrong — `pow` with a negative base,
+`round` on an exact half, and whether a `mat2` really came out column-major on
+both backends. The read-back path it rides on is the one above.
 
 Two of the traps this layer was meant to catch are closed by construction
 instead, which is the better place for them: `mod` is recorded as its floored
@@ -330,6 +416,7 @@ Outputs:
 - `build/Tools/Transpile/shadertoy-transpile` — the converter
 - `build/Apps/Plasma/Plasma.app` — the hand port
 - `build/Apps/PlasmaPort/PlasmaPort.app` — the same shader, transpiled
+- `build/Apps/TunnelPort/TunnelPort.app` — a transpiled port reading a channel
 - `build/Tests/Glsl/GlslTests`, `build/Tests/Runtime/RuntimeTests`
 
 ## On licensing the corpus
@@ -339,3 +426,7 @@ and the non-commercial clause makes redistribution a real question rather than a
 formality. The corpus is therefore fetched on demand from a list of IDs rather
 than vendored, and only ports of self-authored or explicitly permissive shaders
 are committed here.
+
+The same applies to the images a channel reads: Shadertoy's own textures are
+not ours to ship either, so `Apps/TunnelPort` generates the brick pattern it
+samples rather than bundling one.

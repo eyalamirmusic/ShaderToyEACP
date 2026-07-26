@@ -34,7 +34,8 @@ cmake --build build --target RuntimeTests
 
 Outputs:
 - `build/Tools/Transpile/shadertoy-transpile` (the converter)
-- `build/Apps/Plasma/Plasma.app`, `build/Apps/PlasmaPort/PlasmaPort.app`
+- `build/Apps/Plasma/Plasma.app`, `build/Apps/PlasmaPort/PlasmaPort.app`,
+  `build/Apps/TunnelPort/TunnelPort.app`
 - `build/Tests/Glsl/GlslTests`, `build/Tests/Runtime/RuntimeTests`
 
 ### Build Options
@@ -107,8 +108,12 @@ reports the gap in its body once rather than once per copy.
 - `ShaderView`: a `GPUView` that runs one `Program` — drives the clock, follows
   the pointer, keeps `iResolution` in step with the view size, redraws every
   refresh. Disables MSAA, which a fullscreen shader cannot benefit from.
-- `SHADERTOY_UNIFORMS(...)`: lists a port's extra uniform members, the way
-  `EACP_SHADER` lists a plain `ShaderProgram`'s.
+- `Channel`: one of `iChannel0..3` — the texture and the size published beside
+  it as `iChannelResolution`, as one value, with Shadertoy's sampling rather
+  than eacp's default. A port declares the channels it reads and no others,
+  since every declared texture is a binding the draw has to satisfy.
+- `SHADERTOY_UNIFORMS(...)`: lists a port's channels and extra uniform members,
+  the way `EACP_SHADER` lists a plain `ShaderProgram`'s.
 
 ### Build integration
 

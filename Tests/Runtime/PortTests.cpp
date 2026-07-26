@@ -1,8 +1,10 @@
 #include "Common.h"
 
+#include <Channels.h>
 #include <Checker.h>
 #include <Fbm.h>
 #include <Kaleido.h>
+#include <Tunnel.h>
 #include <Voronoi.h>
 
 using namespace nano;
@@ -86,4 +88,48 @@ auto tMatrixAndIntrinsicPortCompiles = test("Ports/matricesAndIntrinsics") = []
     check(contains(source.source, "rsqrt("));
     check(contains(source.source, "sign("));
     check(contains(source.source, ".wzyx"));
+};
+
+// A port declares the channels it reads and no others, so the one texture this
+// shader samples is the one binding the draw has to satisfy - and the sampling
+// is the page's for a channel rather than eacp's for a texture, or the polar
+// coordinate would clamp at the seam instead of wrapping round it.
+auto tChannelPortCompiles = test("Ports/samplesATextureChannel") = []
+{
+    auto shader = Shadertoy::Ports::Tunnel {};
+    const auto& source = shader.source();
+
+    check(!source.source.empty());
+    check(contains(source.source, "texture0"));
+    check(!contains(source.source, "texture1"));
+
+    check(shader.iChannel0.texture.sampling.filter == GPU::TextureFilter::Linear);
+
+    check(shader.iChannel0.texture.sampling.addressMode
+          == GPU::TextureAddressMode::Repeat);
+};
+
+// The other two reads, which each lower to something the ordinary sample is
+// not: a level the shader names rather than one the derivatives imply, and a
+// texel read that goes past the sampler altogether. Both are backend-specific
+// spellings, so what this checks is that the generated port reached them at all.
+auto tChannelReadsCompile = test("Ports/samplesAtALevelAndFetchesATexel") = []
+{
+    auto shader = Shadertoy::Ports::Channels {};
+    const auto& source = shader.source();
+
+    check(!source.source.empty());
+    check(contains(source.source, "texture0"));
+    check(contains(source.source, "texture1"));
+
+    auto sampledLevel = Platform::isWindows() ? "SampleLevel(" : "level(";
+    auto fetched = Platform::isWindows() ? ".Load(" : ".read(";
+
+    check(contains(source.source, sampledLevel));
+    check(contains(source.source, fetched));
+
+    // Two channels and the size of one of them, on top of the Shadertoy set's
+    // 48 bytes: a texture takes no room in the uniform block, a resolution
+    // takes a float3's slot, and both channels declare one.
+    check(shader.uniformByteSize() == 80);
 };

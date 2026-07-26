@@ -24,6 +24,70 @@ inline constexpr FullscreenVertex fullscreenTriangle[] = {
     {{-1.0f, 3.0f}, {0.0f, 2.0f}},
 };
 
+// One of Shadertoy's four texture channels: the texture a port samples, and the
+// size the page publishes beside it as iChannelResolution. They are one member
+// rather than two because assigning the texture fills both, so a port cannot
+// sample an image while reporting the dimensions of a different one.
+//
+// The sampling is Shadertoy's default for a channel rather than eacp's for a
+// texture - bilinear and wrapping, which is what a shader scrolling a
+// coordinate past 1 expects. A port that needs the other one sets `sampling`
+// before compile() runs; it is baked into the pipeline, not chosen per draw.
+struct Channel
+{
+    Channel()
+    {
+        texture.sampling = {GPU::TextureFilter::Linear,
+                            GPU::TextureAddressMode::Repeat};
+    }
+
+    // A channel stands in for its texture wherever one is sampled, so a ported
+    // body spells sample(iChannel0, uv) the way the GLSL it came from spelled
+    // texture(iChannel0, uv).
+    operator const GPU::Texture2D&() const { return texture; }
+
+    Channel& operator=(const GPU::Texture& newTexture)
+    {
+        texture = newTexture;
+
+        resolution = {(float) newTexture.width(), (float) newTexture.height(), 1.0f};
+
+        return *this;
+    }
+
+    GPU::Uniform<GPU::Texture2D> texture;
+    GPU::Uniform<GPU::Float3> resolution;
+};
+
+// Adapts eacp's uniform walk to what a port declares on top of it, so
+// SHADERTOY_UNIFORMS takes a Channel and a plain Uniform in the same list: a
+// Channel is two members eacp knows separately, and they have to reach the
+// visitor in declaration order for the slots they take to be the ones the
+// generated shader reads.
+class ExtraUniformVisitor
+{
+public:
+    explicit ExtraUniformVisitor(GPU::ShaderVisitor& visitorToUse)
+        : visitor(visitorToUse)
+    {
+    }
+
+    template <typename T>
+    void operator()(const char* name, GPU::Uniform<T>& member)
+    {
+        visitor(name, member);
+    }
+
+    void operator()(const char* name, Channel& channel)
+    {
+        visitor(name, channel.texture);
+        visitor(name, channel.resolution);
+    }
+
+private:
+    GPU::ShaderVisitor& visitor;
+};
+
 // Base for a ported Shadertoy. It owns everything the original page supplies
 // implicitly - the fullscreen geometry, the uniform set, the clip-space
 // position - so a port is only the body of mainImage:
@@ -46,8 +110,14 @@ inline constexpr FullscreenVertex fullscreenTriangle[] = {
 // The uniforms keep Shadertoy's names, so a ported body reads the same as the
 // GLSL it came from. Two deviations, both because the EDSL has no integer value
 // type usable in float arithmetic yet: iFrame is a float, and iDate is absent.
-// Texture channels (iChannel0..3) are absent as well - they arrive with the
-// texture stage of the plan.
+//
+// Texture channels are not declared here. A port declares the ones it samples
+// and no others, because every declared texture becomes a binding the draw has
+// to satisfy - four channels on the base would make every port, textured or
+// not, carry four textures it never reads:
+//
+//       Channel iChannel0;
+//       SHADERTOY_UNIFORMS(iChannel0)
 class Program : public GPU::ShaderProgram
 {
 public:
@@ -71,10 +141,11 @@ protected:
     // returned value is its fragColor.
     virtual GPU::Float4 mainImage(const GPU::Float2& fragCoord) = 0;
 
-    // Uniforms a port needs beyond the Shadertoy set - rare, since a faithful
-    // port takes everything from the ones above. Declare them as members and
-    // list them here with SHADERTOY_UNIFORMS.
-    virtual void reflectExtraUniforms(GPU::ShaderVisitor&) {}
+    // What a port declares beyond the Shadertoy set: the texture channels it
+    // samples, and any uniform of its own - rare, since a faithful port takes
+    // everything from the ones above. Declare them as members and list them
+    // here with SHADERTOY_UNIFORMS.
+    virtual void reflectExtraUniforms(ExtraUniformVisitor&) {}
 
 private:
     // The whole vertex stage of a Shadertoy: pass the covering triangle through
@@ -97,16 +168,17 @@ private:
         visitor("iFrame", iFrame);
         visitor("iMouse", iMouse);
 
-        reflectExtraUniforms(visitor);
+        auto extra = ExtraUniformVisitor {visitor};
+        reflectExtraUniforms(extra);
     }
 };
 } // namespace Shadertoy
 
-// Lists a port's extra uniform members, the way EACP_SHADER lists a plain
-// ShaderProgram's. The Shadertoy set is already declared by the base, so this
-// names only what the port added.
+// Lists a port's texture channels and extra uniform members, the way
+// EACP_SHADER lists a plain ShaderProgram's. The Shadertoy set is already
+// declared by the base, so this names only what the port added.
 #define SHADERTOY_UNIFORMS(...)                                                     \
-    void reflectExtraUniforms(eacp::GPU::ShaderVisitor& visitor) override           \
+    void reflectExtraUniforms(Shadertoy::ExtraUniformVisitor& visitor) override     \
     {                                                                               \
         EACP_GPU_FIELDS(visitor, __VA_ARGS__)                                       \
     }
