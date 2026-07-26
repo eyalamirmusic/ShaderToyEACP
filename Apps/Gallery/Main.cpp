@@ -20,6 +20,15 @@
 #include <Tunnel.h>
 #include <Voronoi.h>
 
+#include <S3l23RK.h>
+#include <S4ssSRl.h>
+#include <S7d23DR.h>
+#include <ScsscRl.h>
+#include <SctdfzN.h>
+#include <SdldyWN.h>
+#include <SftVXRc.h>
+#include <SsdVyWt.h>
+
 using namespace eacp;
 using namespace Shadertoy;
 
@@ -140,6 +149,19 @@ Vector<Entry> corpus()
     entries.add(entryFor<Ports::Macros>("Macros"));
     entries.add(entryFor<Ports::Compose>("Compose"));
     entries.add(entryFor<Ports::Basis>("Basis"));
+
+    // And the ones nobody here wrote: real Shadertoys, named after their ids
+    // because that is what the site names them, and credited to the author the
+    // page credits. What they are for is the same thing the rest of the list is
+    // for, except that these were not written to be convertible.
+    entries.add(entryFor<Ports::S7d23DR>("7d23DR - mrange"));
+    entries.add(entryFor<Ports::SsdVyWt>("sdVyWt - mrange"));
+    entries.add(entryFor<Ports::S3l23RK>("3l23RK - iq"));
+    entries.add(entryFor<Ports::S4ssSRl>("4ssSRl - iq"));
+    entries.add(entryFor<Ports::SftVXRc>("ftVXRc - iq"));
+    entries.add(entryFor<Ports::ScsscRl>("csscRl - pizzahollandaise"));
+    entries.add(entryFor<Ports::SctdfzN>("ctdfzN - Peace"));
+    entries.add(entryFor<Ports::SdldyWN>("dldyWN - lf94"));
 
     return entries;
 }

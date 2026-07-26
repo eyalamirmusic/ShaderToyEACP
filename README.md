@@ -517,8 +517,9 @@ Or look at it, which is a different question and one no report answers:
 build/Apps/Gallery/Gallery.app/Contents/MacOS/Gallery   # arrows, space
 ```
 
-Every shader in `Corpus/` is compiled into that one app, and the arrow keys walk
-through them. The report says a shader converted, and `RuntimeTests` says the
+Every shader in `Corpus/` is compiled into that one app — including the eight
+real Shadertoys in `Corpus/Imported/`, which are there because their authors
+licensed them permissively — and the arrow keys walk through them. The report says a shader converted, and `RuntimeTests` says the
 C++ it converted to compiles and satisfies a handful of pixels; neither says the
 frame looks like the shader, and a march that stops one step early reports
 nothing, compiles, and renders something plausible. The gallery is also the only

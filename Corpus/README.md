@@ -8,6 +8,11 @@ build/Tools/Transpile/shadertoy-transpile --report Corpus/*.glsl \
     Apps/PlasmaPort/Plasma.glsl
 ```
 
+`Imported/` is the exception to all of the above: eight real Shadertoys by other
+people, permissively licensed, which is why they could be committed. See the
+README there — including the count that came out of the 204 they were picked
+from, which is the first thing this corpus has measured that it did not write.
+
 Every shader here is also compiled into `Apps/Gallery`, which draws them one at
 a time — arrow keys to move, space to restart. That is where a shader that
 converts, compiles and still does not look right gets caught, and it is the

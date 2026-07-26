@@ -37,6 +37,26 @@ shadertoy_add_port(Gallery
         GLSL ${CMAKE_CURRENT_LIST_DIR}/../PlasmaPort/Plasma.glsl
         NAME Plasma)
 
+# Real Shadertoys, by people who are not us - see Corpus/Imported/README.md for
+# where they came from and why these are the ones that could be committed. They
+# are named after their ids, which is what the site names them, prefixed because
+# a C++ struct cannot start with a digit.
+set(GALLERY_IMPORTED
+        3l23RK
+        4ssSRl
+        7d23DR
+        csscRl
+        ctdfzN
+        dldyWN
+        ftVXRc
+        sdVyWt)
+
+foreach (shader IN LISTS GALLERY_IMPORTED)
+    shadertoy_add_port(Gallery
+            GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Imported/${shader}.glsl
+            NAME S${shader})
+endforeach ()
+
 set(BUNDLE_ID "com.shadertoyeacp.gallery")
 
 set_target_properties(Gallery PROPERTIES
