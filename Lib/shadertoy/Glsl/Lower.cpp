@@ -73,18 +73,48 @@ std::string flattened(std::string path)
     return path;
 }
 
-// Names the port cannot hand out to a local, because the runtime already has
-// something of that name in scope.
+// Names the port cannot hand out to a local, because something of that name is
+// already in scope where the body is emitted. A shader may use any of them for
+// a local of its own - `float cos = cos(t);` is ordinary GLSL, since GLSL's
+// builtins are not names in a scope - and taking one here would shadow the very
+// thing the next line calls.
+//
+// Three sources: the uniform set the runtime declares, the EDSL vocabulary the
+// emitter spells a body with, and the C++ words a name cannot be at all. The
+// middle one is what the emitter can emit rather than what eacp has, which is
+// why it is a list here rather than a question asked of the module.
 constexpr const char* reservedNames[] = {
-    "iResolution",
-    "iTime",
-    "iTimeDelta",
-    "iFrame",
-    "iMouse",
-    "iChannel0",
-    "iChannel1",
-    "iChannel2",
-    "iChannel3",
+    "iResolution", "iTime",        "iTimeDelta",  "iFrame",    "iMouse",
+    "iChannel0",   "iChannel1",    "iChannel2",   "iChannel3",
+
+    "sin",         "cos",          "tan",         "asin",      "acos",
+    "atan",        "atan2",        "exp",         "exp2",      "log",
+    "log2",        "pow",          "sqrt",        "rsqrt",     "abs",
+    "floor",       "ceil",         "round",       "trunc",     "fract",
+    "sign",        "min",          "max",         "clamp",     "mix",
+    "smoothstep",  "step",         "length",      "distance",  "dot",
+    "cross",       "normalize",    "reflect",     "refract",   "faceforward",
+    "mod",         "dfdx",         "dfdy",        "fwidth",    "all",
+    "any",         "transpose",    "determinant", "sample",    "fetch",
+    "select",      "toInt",        "toFloat",     "constant",  "integer",
+    "boolean",     "var",          "array",       "ifThen",    "loop",
+    "breakLoop",   "continueLoop",
+
+    "float2",      "float3",       "float4",      "int2",      "int3",
+    "int4",        "bool2",        "bool3",       "bool4",     "float2x2",
+    "float3x3",    "float4x4",
+
+    "auto",        "bool",         "break",       "case",      "catch",
+    "char",        "class",        "const",       "continue",  "default",
+    "delete",      "do",           "double",      "else",      "enum",
+    "explicit",    "extern",       "false",       "float",     "for",
+    "friend",      "goto",         "if",          "inline",    "int",
+    "long",        "namespace",    "new",         "operator",  "private",
+    "protected",   "public",       "register",    "return",    "short",
+    "signed",      "sizeof",       "static",      "struct",    "switch",
+    "template",    "this",         "throw",       "true",      "try",
+    "typedef",     "typename",     "union",       "unsigned",  "using",
+    "virtual",     "void",         "volatile",    "while",
 };
 
 bool isIntegerType(const std::string& type)
@@ -492,7 +522,8 @@ private:
                 if (source.isStructType(expr.text))
                     return expr.text;
 
-                const auto* function = source.function(expr.text);
+                const auto* function =
+                    source.resolve(expr.text, expr.args.size()).function;
 
                 if (function != nullptr && source.isStructType(function->returnType))
                     return function->returnType;
@@ -632,7 +663,7 @@ private:
         if (source.isStructType(expr.text))
             return lowerStructConstructor(expr, into);
 
-        const auto* function = source.function(expr.text);
+        const auto* function = source.resolve(expr.text, expr.args.size()).function;
 
         if (function != nullptr && canInline(*function, expr))
             return expandCall(*function, expr, into, true).leaves;
@@ -759,7 +790,12 @@ private:
     int lowerCall(int node, Vector<Statement>& into)
     {
         const auto& expr = source.expr(node);
-        const auto* function = source.function(expr.text);
+        // A name that resolves to several helpers of the same arity is not one
+        // this can inline: which body the call means is decided by argument
+        // types nothing here infers. It stays a call, and the emitter reports
+        // it as the helper it could not inline - which is what it is, and one
+        // row rather than two saying the same thing about the same name.
+        const auto* function = source.resolve(expr.text, expr.args.size()).function;
 
         if (function != nullptr && canInline(*function, expr))
             return expandCall(*function, expr, into, true).node;

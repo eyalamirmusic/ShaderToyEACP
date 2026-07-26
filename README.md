@@ -11,7 +11,15 @@ a matter of opinion into a measurement. Every shader that fails to convert names
 a specific gap, and the number of shaders blocked on each gap is what decides
 which one to close next.
 
-> **⚠️ Early days.** Stages 0 to 8 are done: straight-line GLSL converts,
+> **⚠️ Early days.** Stages 0 to 11 are done, and stage 11 is the first one the
+> measurement chose rather than an argument: it closed the eacp row that 27 of
+> the 49 compile failures named, found five bugs of this project's own behind
+> another 20, and built the scan step that scores both. Of the 204 real
+> Shadertoys, **95 now convert *and* compile**, against 51 before it — and the
+> report is honest about four fewer than it used to be, which is the other half
+> of the stage and the more interesting half. The rest of the history:
+>
+> Stages 0 to 8: straight-line GLSL converts,
 > constant-trip-count loops unroll, helper functions inline, the intrinsic and
 > swizzle gaps are closed, texture channels are sampled, the EDSL has real
 > control flow — mutable locals, `if`/`else`, `while`, `break`, `continue` and
@@ -27,8 +35,8 @@ which one to close next.
 > eacp for the one gap the reading turned up in its column. Stage 10 is the
 > first time any of it was measured against shaders nobody here wrote: 204 real
 > Shadertoys, half of which convert, half of *those* compile, and what stops the
-> rest is now a ranked list with eacp's own name at the top of it. See the plan
-> and the coverage table below.
+> rest is a ranked list with eacp's own name at the top of it — which is what
+> stage 11 then spent. See the plan and the coverage table below.
 
 ## Why this works better than it looks like it should
 
@@ -74,12 +82,16 @@ Lib/shadertoy/Runtime/    Program (the Shadertoy uniform set + fullscreen pass)
                           Buffer (an off-screen pass and the pair it ping-pongs)
                           ShaderView (clock, pointer, resolution, pass order)
 Tools/Transpile/          the shadertoy-transpile CLI
+Lib/shadertoy/Coverage/   both tables over one corpus: what does not convert,
+                          and what converts and then does not compile
+Tools/Scan/               shadertoy-scan, which runs both over a directory
 Lib/shadertoy/Corpus/     the API, and the books a 1500-request month needs
 Tools/Corpus/             shadertoy-fetch, which pulls Shadertoys by id
 Corpus/                   shaders the coverage report is measured against
                           (ids.txt names the ones that are not committed)
 Corpus/Imported/          real Shadertoys, by other people, permissively licensed
 Tests/Corpus/             the fetcher's bookkeeping, over a stubbed API
+Tests/Coverage/           the scan's tabulation, over a stubbed compiler
 Apps/Plasma/              a hand port, for comparison
 Apps/PlasmaPort/          the same shader, converted from GLSL at build time
 Apps/TunnelPort/          a converted port that reads a texture channel
@@ -93,8 +105,9 @@ Tests/Runtime/            vertex layout, uniform block layout, generated stages,
                           array read at an index the pixel computed, of a grid
                           counted in integers behind a componentwise test, of a
                           struct carried out of a loop a field at a time, of a
-                          buffer reading its own previous frame, and of a colour
-                          written one component at a time
+                          buffer reading its own previous frame, of a colour
+                          written one component at a time, and of the two
+                          products a matrix has
 ```
 
 A port looks like this — hand-written or generated, the shape is the same:
@@ -477,20 +490,121 @@ arrow keys to walk them, so a shader that converts and does not build stops the
 build, and one that builds and does not look right is visible at last. Both
 tables are below.
 
-**Stage 11 — what the measurement asks for.** *Next*, and for the first time the
-order is measured rather than argued. Three pieces, in this order:
+**Stage 11 — what the measurement asks for.** *Done*, and for the first time
+the order was measured rather than argued. Three pieces, and the third came
+first because it is what scores the other two:
 
-1. **eacp: a literal in any argument position.** 27 of the 49 compile failures
-   are one gap — see the ledger. 21 of the 49 have *no other* error, so they
-   compile the day it closes.
-2. **The transpiler's own bugs.** 20 of the 49 never reach eacp at all: an
-   identifier emitted before it was declared, a reassignment emitted as a
-   declaration, a type inferred wrongly. None of these are gaps in the EDSL and
-   all of them are invisible to the report, which is the point.
-3. **A scan step, so the number above is a measurement rather than an
-   anecdote.** Both figures here were produced by hand. As a build step —
-   convert everything in a directory, compile-test each, register the survivors
-   and tabulate the rest — rerunning it after (1) is how the fix gets scored.
+**The scan step.** `Tools/Scan/shadertoy-scan` converts every shader in a
+directory, feeds what converted to a real compiler, and prints both tables. The
+tabulation is `Lib/shadertoy/Coverage`, where the compile step is a
+`std::function` — the same shape the fetcher's transport has, and for the same
+reason: everything around it is bookkeeping, and a test can drive it over a
+compiler that never ran. Its first run reproduced stage 10's hand count exactly
+(100 converted, 51 compiled, 49 not) in six seconds, which is what made the rest
+of the stage a series of measurements rather than of opinions.
+
+It is half of what this stage's plan said, and the missing half is stage 12's:
+"convert everything in a directory, compile-test each, **register the
+survivors** and tabulate the rest". The tabulating is done and the registering
+is not, so what converts and compiles is a number in a table and nothing a
+target can consume — which is why `Apps/Gallery` still shows the 28 shaders this
+repository holds rather than the 95 that pass.
+
+**eacp: a literal in any argument position.** The largest single row the table
+has ever had, and it closed as one mechanism rather than as thirty overloads —
+see the ledger. 27 shaders were blocked first by it and it took the count from
+51 compiling to 77 on its own.
+
+**The transpiler's own bugs.** Five of them, and between them and eacp's second
+batch the count went 77 to 97 — the table below has it step by step. None of
+them was visible to the report:
+
+- A local declared without an initialiser was left undeclared, on the
+  assumption that the assignment which follows becomes the declaration. Two
+  things read a name before that: a write to part of a value rebuilds the whole
+  of it out of the components it is *not* writing, and an inliner binding an
+  `out` argument. Both produced C++ naming a value in its own initialiser.
+- A matrix built only from literals was anchored once, and the EDSL takes it
+  column by column — so every column after the first had no handle to take a
+  graph from. Per column is the rule, which also catches a matrix whose names
+  all land in one of them.
+- A scalar written into more than one component was read a component at a time.
+  GLSL broadcasts it: `p.xy += 0.05 * iTime` adds the one value to both.
+- GLSL's `==` on two vectors compares the whole value and answers one bool; it
+  is `equal()` that is componentwise. The port emitted the operator, which in
+  both languages under the EDSL is a mask.
+- A local may be called `cos`. GLSL's builtins are not names in a scope and a
+  shader takes them freely; here the name shadows the very thing the next line
+  calls.
+
+And a sixth that is a correction rather than a fix: a helper is now resolved by
+how many arguments the call passes, and a name that still resolves to several is
+not inlined at all. GLSL overloads on parameter *types* as well, nothing here
+infers the type of an argument, and taking the first candidate inlined a body
+shaped for arguments the call did not pass — which converts, compiles, and draws
+something else. It costs four shaders off the converted count, two of which had
+been compiling. That direction is the point: the number went down because it had
+been wrong.
+
+**Stage 12 — the survivors, on screen.** *Next*, and it is the half of stage
+11's third piece that did not get built rather than anything new the measurement
+asked for. 95 shaders now convert and compile and the only way to know that is
+a number: `Apps/Gallery` shows 28, which is every shader this repository holds,
+and there is no way to point it at the ones that do not live here. Four pieces,
+and the first is the one that stops any of this being reproducible:
+
+**A fetcher for the corpus the counts are measured over.** Every number in this
+README comes from `Vipitis/Shadereval-inputs`, and nothing here can ask for it.
+`shadertoy-fetch` talks to Shadertoy's own API, which wants a key that wants
+Silver status; the dataset is a different endpoint that wants no key at all, and
+the 204 were pulled by hand. That makes the input to the whole measurement the
+one thing the repository cannot reproduce, which is a worse position than not
+having measured. It costs one more `Transport` behind the bookkeeping that is
+already there — `Lib/shadertoy/Corpus` is written around the transport being
+replaceable, which is what `Tests/Corpus` exercises. What comes back beside each
+shader is its id, its author and its licence, so `Corpus/External` gains the
+licence note that decides what may ever be committed rather than only measured.
+
+**`shadertoy-scan --register <file>`.** What survived, written where a build can
+read it: the names and the headers they were converted into, as a CMake list,
+plus the include list and entry table an app would otherwise hold by hand. The
+scan already knows all of it — `Coverage::Report::outcomes` says which shader
+passed and where its header went — so this is the step from a table to something
+consumable and not new information. It is also what makes the survivor count
+checkable in the other direction: a registration with 95 entries and a table
+saying 95 agree, or one of the two is lying.
+
+**A Gallery that takes a directory.** Beside the committed list rather than
+instead of it, because the two mean different things and only one of them can
+keep the rule that makes it worth having. The 29 ports built here — 28 entries,
+since a two-pass shader is one of them — fail the build if any of them converts
+and will not compile, which is the whole reason each is in that target. An
+external corpus cannot keep that rule: 105 of the 204 do not convert and 4 more
+do not compile, so a build that insisted would never run. So
+`-DSHADERTOY_EXTERNAL_CORPUS=<dir>` adds whatever the registration says
+survived, off by default, and the gallery has a guaranteed half and a measured
+half.
+
+**And then looking at them,** which is the piece with no tool and the reason for
+the other three. 95 shaders nobody here wrote, converted by a transpiler that
+has never once been checked against a picture of what they should look like, is
+a great many frames to be quietly wrong about — and every validation layer above
+stops short of exactly that. Stage 10 added the gallery because a shader can
+convert, compile, satisfy every pixel a test thought to check and still not be
+the shader it came from; this is that argument at ten times the scale, and the
+imported eight are still the only ports anybody has compared against the page
+they came from. What the pieces above buy is that comparison being *possible*.
+They do not buy it being done, and the ledger should not pretend otherwise.
+
+**Stage 13 — the early return.** *After that*, and for the first time the list
+is one the scan prints rather than one anybody chose. **An early `return`**
+blocks 71 of the 204, which is more than twice the next four rows put together.
+A `return` in the middle of a function is how a shader says "not this pixel",
+and neither unrolling nor inlining flattens one — what it needs is either a
+`Var` the inlined body writes and the caller reads under a guard, or a real
+early exit in the EDSL. Behind it: indexing (16), the helpers the inliner will
+not take, and the four shaders that still convert without compiling, each a type
+inferred wrongly in a different way.
 
 ## Using it
 
@@ -544,7 +658,20 @@ A channel pointed at a buffer follows it rather than copying the texture it
 happened to be showing, since what a buffer publishes is exactly what its swap
 changes every frame.
 
-Measure the corpus — this is the exact command the table below comes from:
+Measure a corpus — this is the exact command both tables below come from, and
+it is the one to rerun after changing anything in either column:
+
+```bash
+build/Tools/Scan/shadertoy-scan <directory-of-glsl> --out scan
+```
+
+It converts every shader in the directory, compiles what converted, and prints
+what blocked the rest — `--verbose` names each shader that converted and did
+not compile, with what the compiler said first, which is what a table cannot be
+acted on without. The generated headers are left in `--out`, because a failure
+should be something to go and look at.
+
+For the first table only, and without needing a toolchain:
 
 ```bash
 build/Tools/Transpile/shadertoy-transpile --report Corpus/*.glsl \
@@ -565,6 +692,11 @@ frame looks like the shader, and a march that stops one step early reports
 nothing, compiles, and renders something plausible. The gallery is also the only
 target that compiles every port, so a shader the transpiler is happy with and a
 C++ compiler is not fails this build rather than going unnoticed.
+
+Those 28 entries are every shader this repository holds, and they are not the 95
+that convert and compile: the other 67 are shaders whose licence keeps them off
+this repository, and nothing yet points the gallery at a directory of them. That
+is stage 12.
 
 Or measure real Shadertoys, which is what the counts were built to rank. The
 ids are committed and the shaders are not:
@@ -602,53 +734,69 @@ being counted.
 Over the 204 real Shadertoys in `Vipitis/Shadereval-inputs`, which is the first
 corpus here that nobody wrote for this project. `Shaders` is the number blocked
 by that gap, which is what the roadmap is sorted by. The ten rows at the top of
-it, out of a long tail that runs down to a great many blocking one shader each:
+it, out of 222 that run down to a great many blocking one shader each:
 
 | Blocker | Shaders | Occurrences |
 | --- | ---: | ---: |
-| control-flow: early return | 71 | 187 |
-| type: indexing | 15 | 39 |
+| control-flow: early return | 71 | 191 |
+| type: indexing | 16 | 40 |
+| user-function: iBox | 10 | 11 |
+| user-function: render | 9 | 10 |
 | parse-error: unexpected `}` | 8 | 31 |
-| type: vector * matrix | 7 | 14 |
+| user-function: saturate | 7 | 116 |
+| parse-error: unexpected `return` | 6 | 9 |
 | user-function: radians | 6 | 8 |
 | component-assignment: indexed target | 5 | 18 |
-| intrinsic: inverse | 5 | 5 |
-| user-function: tanh | 5 | 5 |
-| type: uint | 4 | 7 |
-| user-function: floatBitsToInt | 4 | 4 |
+| parse-error: expected `)`, found `[` | 5 | 7 |
 
-100 of 204 converted with no gaps; 104 reported at least one.
+99 of 204 converted with no gaps; 105 reported at least one. The 212 rows below
+these ten block 310 shaders between them, counting a shader once per row it
+appears in.
 
-`radians`, `tanh` and `floatBitsToInt` arriving as *user functions* is the
-cheapest row on the list: they are GLSL builtins that the intrinsic table simply
-does not name. The expensive one is at the top and is not close — a `return`
-in the middle of a function is how a real shader says "not this pixel", and no
-amount of unrolling or inlining flattens one.
+`radians` arriving as a *user function* is the cheapest row here: it is a GLSL
+builtin the intrinsic table simply does not name. `saturate` is a different
+thing entirely — it is a *helper the shader wrote three of*, one per argument
+type, and since stage 11 an overload set is not something this inlines at all.
+The expensive one is at the top and is not close: a `return` in the middle of a
+function is how a real shader says "not this pixel", and no amount of unrolling
+or inlining flattens one.
 
-Over the corpus in this repository — 18 in `Corpus/`, 8 in `Corpus/Imported/`
-and `Apps/PlasmaPort/Plasma.glsl` — the same report is empty, 27 of 27, which is
+Over the corpus in this repository — 20 in `Corpus/`, 8 in `Corpus/Imported/`
+and `Apps/PlasmaPort/Plasma.glsl` — the same report is empty, 29 of 29, which is
 what it has been since stage 8 and no longer means anything by itself. The
 shaders here were written to convert or picked because they did.
 
 ### What converts and then does not compile
 
 The second table is the one stage 10 discovered, and it exists because the first
-one cannot see it. Of the 100 shaders that convert, the emitted C++ is fed to a
-compiler; **51 of them build and 49 do not**. Grouped by the first error:
+one cannot see it. Of the 99 shaders that convert, the emitted C++ is fed to a
+compiler; **95 of them build and 4 do not**. Grouped by the first error, with
+`Unblocks` the number that would compile if this row alone went away:
 
-| Blocker | Shaders | Whose is it |
-| --- | ---: | --- |
-| Unresolved intrinsic overload — a literal in an argument position eacp has no form for | 27 | eacp |
-| Identifier emitted before it was declared | 9 | transpiler |
-| Invalid operands — a type inferred wrongly and carried into an operator | 5 | transpiler |
-| `auto x = … x …` — a reassignment emitted as a declaration | 5 | transpiler |
-| `.x` on a `Float` — a scalar where a vector was meant | 3 | transpiler |
+| Blocker | Shaders | Unblocks | Whose is it |
+| --- | ---: | ---: | --- |
+| Invalid operands — a type inferred wrongly and carried into an operator | 2 | 2 | transpiler |
+| `no viable overloaded '='` — the same, one statement later | 2 | 2 | transpiler |
 
-21 of the 49 have no error *other* than the overload one, so they compile on the
-day eacp accepts a literal in any position. 20 have no overload error at all and
-are entirely this project's fault. The remaining 8 are both.
+Nothing in eacp's column is left in it, which has not been true before. What
+stage 11 was worth, one piece at a time:
 
-This is the table worth taking seriously, because every row in it is a shader
+| After | Converted | Compiled |
+| --- | ---: | ---: |
+| Stage 10, as measured by hand | 100 | 51 |
+| The scan step, reproducing it | 100 | 51 |
+| eacp: a literal in any argument position | 100 | 77 |
+| A declaration with no initialiser | 100 | 86 |
+| Matrix columns, the scalar broadcast, vector `==` | 103 | 95 |
+| eacp: `vector * matrix`, `scalar * matrix`, `bool == bool`, a matrix `var`, `int(bool)` | 103 | 97 |
+| An overloaded helper is not inlined | 99 | 95 |
+
+The last row is the only one that moves a number downwards, and it is the one
+worth reading twice: two of the shaders it took off the converted list had been
+*compiling*, with a helper body inlined that was written for other argument
+types. A measurement that only ever improves is not measuring.
+
+This is still the table to take seriously, because every row in it is a shader
 the coverage report had already called converted. It is also the reason
 `Apps/Gallery` compiles every port rather than a chosen few: the report cannot
 fail a build, and a compiler can.
@@ -706,6 +854,23 @@ of finding: what it needs is lowering, not a node. `Basis.glsl` is the one that
 did land in eacp's column — a `mat3` orientation gone back through with
 `transpose`.
 
+`Literals.glsl` and `Blanks.glsl` are stage 11's, one per column. The first
+mixes a literal and a value in every intrinsic that takes both — one edge of a
+`smoothstep` computed and the other written down, the literal first in a `min`
+and second in a `step`, two constants mixed by something the pixel worked out —
+and turns a coordinate through a matrix from both sides, which is the pair that
+compiles either way round and means two different things. So the frame is what
+says which: red carries what the row-wise product left and green what the
+column-wise one did, and the two swap places across the middle of the frame.
+
+`Blanks.glsl` is the other column and is named for what it is about: a local
+declared before it holds anything. Nothing else here reads a name that has not
+been written yet, and two things in a real shader do — a write to part of a
+value, which rebuilds the whole of it, and an inliner binding an `out`
+argument. Beside it, a scalar written into two components at once, whose two
+halves are carried in a channel each so that the frame says the broadcast
+reached both; an equality between two whole vectors; and a local called `cos`.
+
 That sentence used to end by conceding that the corpus was far too small for any
 of these counts to rank anything, which was true for nine stages and is not any
 more. Stage 10 put 204 shaders nobody here wrote through the same report and
@@ -717,9 +882,18 @@ in stage 7 before any of them shipped, in stage 8 correcting the ledger about
 where a gap even was, and in stage 9 finding that most of what stood in the way
 was not in either column: it was notation the front end could not read.
 
-Stage 10's finding is of the same kind and is the largest so far: half of what
+Stage 10's finding is of the same kind and was the largest so far: half of what
 the report passes, a compiler rejects — and the single biggest reason is one
 missing shape in eacp's intrinsics rather than anything the ledger had listed.
+
+Stage 11 is the first one that only spent what stage 10 measured, and its own
+finding is about the measuring rather than about either column. Two of the seven
+things it changed made a number *worse* — the honest count of what converts fell
+by four — and both were cases where the transpiler had been quietly guessing:
+which of a shader's three `saturate`s a call meant, and what a component read
+off a scalar was. A table that can only go up is a table nobody is checking, and
+the way to keep it checkable is to make the tool that prints it cheap enough to
+rerun after every change. That is what the scan step is for.
 
 ## What this has already changed in eacp
 
@@ -1000,6 +1174,65 @@ actually has, or the roadmap is sorted by noise. Stage 7 found the same shape on
 level down, in a struct whose name was thrown away; this is that lesson at the
 scale of a whole file.
 
+**A literal goes where a shader writes one, not where an overload was written**
+(stage 11). Every intrinsic came in two shapes — one where every argument is a
+handle, and one where the scalar arguments are all `float` and get anchored with
+`constantOn` against the argument that is not. There was nothing in between, and
+GLSL mixes them freely: `smoothstep(0.0, zo * zi, -d)` has one edge of each,
+`min(0.0, g)` puts the literal first, `step(d, 0.0)` puts it second, and
+`mix(0.5, 1.0, h)` interpolates between two constants by something computed.
+
+The fix is one mechanism rather than thirty overloads, which is what makes it
+worth recording. `detail::intrinsic()` takes a pack of arguments that may be
+handles or literals in any mix, finds the first that is a handle, and records
+every literal as a constant on the graph that one brought — so an intrinsic
+declares which argument its *shape* comes from and nothing else. A concept,
+`ShapedBeside`, says what may be written beside a value of that shape: the same
+shape, a scalar broadcast across it, or a literal. `min`, `max`, `pow`, `step`,
+`clamp`, `mix`, `smoothstep` and `atan2` are each two declarations now and
+accept every combination GLSL does.
+
+It was worth **27 shaders blocked first and 26 compiling the day it landed**,
+which is more than any other single entry here has been worth — and it is the
+first one the corpus *ranked* rather than merely produced. Pinned by
+`GPU/codegenLiteralArguments`, which checks the literal is in the position it
+was written in — every one of these means something else if it moves — and by
+`GPU/codegenLiteralArgumentsCompile`, which puts it through the real shader
+compiler.
+
+**A vector belongs on the left of a matrix too** (stage 11). `matrix * vector`
+was there and `vector * matrix` was not, and the second is not the first with
+the arguments swapped: it reads the matrix's rows rather than its columns, which
+is the transposed product and how half the Shadertoys that rotate a coordinate
+spell it. Neither backend needs a form of its own for it — MSL's operator and
+HLSL's `mul()` both read whichever operand is on the left as a row vector — so
+the whole of it is that the `Mul` node carries its operands in the order they
+were written. Which meant renaming them: the node's arguments were `matrix` and
+`vector`, and they are `left` and `right`.
+
+Beside it, the product that is not a product at all: a matrix scaled by a
+scalar, which multiplies every element. That one is a plain `Binary` rather than
+a `Mul`, and it needs nothing per backend for a better reason — a transpose
+leaves a scaling alone, so HLSL holding the matrix the other way up cannot tell.
+`GPU/codegenVectorTimesMatrix` pins the order on both backends, because the
+other order compiles just as happily and is a different picture.
+
+**A matrix can be a mutable local, and a `Var` was constrained on the wrong
+thing** (stage 11). `ShaderProgram::var()` took the float vocabulary, so the
+cell a shader walks a grid with could not be a variable even though the builder
+underneath it accepted one; that was a hole rather than a decision, and it is
+the handle families now, as the builder always had it. The matrix needed an
+overload of its own on top, for the reason a matrix needs one everywhere here:
+it is outside all three families, having none of their operators.
+
+**Three crossings that were missing rather than decided** (stage 11).
+`int(a > b)` is 1 or 0 in GLSL and both languages under this cast a bool the
+same way, so `toInt` and `toFloat` take one. `a == b` on two conditions is not
+the connectives — it is true when both are false — and both languages have it.
+And `min`/`max` on integers took the literal on the right only, for no reason
+other than that nobody had written the other one; a shader writes `max(0, -i)`
+as readily as `max(i, 0)`.
+
 **A swizzle binds tighter than any operator** (stage 9). Emitting `.x()` after
 an object that emitted as an operator produced `a + b.x()` where the source said
 `(a + b).x`, which is a different value and a perfectly plausible one. It had
@@ -1020,6 +1253,50 @@ emitter's line-wrapping path rebuilt a call's head from the *GLSL* name, so a
 wrapped `inversesqrt` came back as `inversesqrt` instead of `rsqrt`. It had
 never mattered while every supported builtin was spelled the same in both
 languages. `Glsl/wrappedCallsKeepEdslName` pins it.
+
+Stage 11's are five, and they are the first found by a tool rather than by
+reading — every one of them came off the scan's second table, and every one was
+invisible to the first:
+
+- **A declaration with no initialiser was a promise rather than a
+  declaration.** It was deferred on the assumption that the assignment which
+  follows becomes the declaration, and two things read the name before that: a
+  write to part of a value rebuilds the whole of it out of the components it is
+  *not* writing, and the inliner binds an `out` argument by name. Both emitted
+  C++ naming a value in its own initialiser. It is declared with a zero now,
+  which is a value GLSL leaves it free to have.
+- **A matrix built from literals needs an anchor per column, not one.** The
+  EDSL takes a matrix column by column, so each column is a vector constructor
+  of its own and each needs a handle to take a graph from. Anchoring the first
+  component of the whole thing left every later column with none — and so does
+  a matrix whose names all happen to land in one of them, which is why the rule
+  is per column and asked of each column's own components.
+- **A scalar written into more than one component is broadcast.** The rebuild
+  reads a component per slot it fills, and `p.xy += 0.05 * iTime` has no
+  components to read: GLSL puts the one value in both. A component of a scalar
+  is now the scalar, which is a thing nothing parses and only the rebuild
+  produces.
+- **`==` on two vectors is one bool in GLSL.** It is `equal()` and `notEqual()`
+  that are componentwise; the operator compares the whole value. Both languages
+  under the EDSL do the opposite and yield a mask, so what says what the shader
+  said is that mask collapsed — `all()` for the equality and `any()` for its
+  negation. The type the emitter had been giving it was already the right one,
+  which is how it went unnoticed: the C++ was a `Bool3` and everything
+  downstream had been told it was a `Bool`.
+- **A local may be called `cos`.** GLSL's builtins are not names in a scope and
+  a shader takes them freely; here the name shadows the very thing the next line
+  calls. The list of what a local may not be called already existed — it held
+  the uniform set — and now holds the EDSL vocabulary and the C++ keywords too.
+
+And the correction beside them, which is the one worth keeping: **a helper is
+resolved by how many arguments the call passes**, and a name that still resolves
+to several is not inlined at all. GLSL overloads on parameter types as well,
+nothing here infers the type of an argument, and taking the first candidate
+inlined a body written for other arguments — which converts, compiles, and draws
+something else. Two of the four shaders this took off the converted list were in
+exactly that state. It is reported as the helper it could not inline, which is
+what it is, rather than as a row of its own saying the same thing about the same
+name.
 
 Stage 5 found one of its own, and a worse-shaped one: the check for whether a
 loop can be unrolled was asked of the loop about *itself*, but treated its own
@@ -1067,30 +1344,10 @@ is the whole fix, and it is the last shape that could still run past the limit.
 What eacp's EDSL cannot express today, from reading the module — the standing
 list the table above is gradually replacing with measured counts.
 
-The first row is the first entry here that arrived as a count rather than as a
-reading, and it is next:
-
-**An intrinsic takes a literal only where it was written to.** Every intrinsic
-comes in two shapes: one where every argument is a handle, and one where the
-scalar arguments are `float` and get anchored with `constantOn` against the
-argument that is not. There is nothing in between, and GLSL mixes them freely:
-
-| What a shader writes | What eacp has | What is missing |
-| --- | --- | --- |
-| `smoothstep(0.0, zo * zi, -d)` | `(float, float, T)` and `(T, T, T)` | one literal edge, one handle edge |
-| `min(0.0, g)`, `max(-1.0, x)` | `min(T, float)` | the literal *first* |
-| `step(d, 0.0)` | `step(float, T)` | the literal *second* |
-| `pow(2.0, 4.0 * sin(t))` | — | a literal base |
-| `mix(0.5, 1.0, h)` | `(A, B, float)` | literal endpoints, a computed blend |
-
-All five are legal GLSL and all five have a spelling in MSL and HLSL, so this is
-eacp's own column rather than the languages'. The fix is mechanical — accept a
-literal in any scalar position and anchor it with `constantOn` against whichever
-argument is a handle — and it is worth **27 shaders blocked first and 21
-unblocked outright**, which is more than any other single row here has ever been
-worth. `ShaderValue.h`.
-
-The rest, in the order they were found rather than ranked:
+The first row here to arrive as a count rather than as a reading was closed by
+stage 11, which is what the counts were built to do; what is left is still a
+reading, and the tables above are what will replace it. In the order the rows
+were found rather than ranked:
 
 | Blocker | Where it lives in eacp |
 | --- | --- |
@@ -1141,6 +1398,19 @@ on all three square matrices, spelled once and right on both backends for the
 same reason the construction already was. What is left of it is above, and it is
 the third that neither shading language has either.
 
+Closed by stage 11: the literal row, which had been the first row here and was
+the largest the corpus has ever ranked — every intrinsic takes a literal in
+every position GLSL puts one in, through one mechanism rather than through an
+overload per combination. With it, the rest of the matrix vocabulary a shader
+actually writes: `vector * matrix`, a matrix scaled by a scalar on either side,
+and a matrix as a mutable local. And three crossings that were absent rather
+than decided against — `int(bool)` and `float(bool)`, `bool == bool`, and the
+integer `min`/`max` with the literal on the left.
+
+The top of the first table is now the top of this list too, and it is one row:
+**no early `return`**. It is above, under the loop forms, and it blocks 71 of
+the 204.
+
 Struck out by stage 8: the aggregate row, which was never eacp's to close. A
 struct of handles is a C++ struct, and the transpiler scalarises a GLSL one into
 the fields the EDSL always had. What replaced it above is what is actually true
@@ -1166,6 +1436,14 @@ instantiates the ports, so a header that reports no gaps but that the EDSL will
 not take is a failing build rather than a clean report. This is what found the
 missing scalar broadcast above, and — once it was pointed at 100 shaders written
 by other people rather than the 19 written here — the 49 in the second table.
+
+Since stage 11 the same layer runs over a whole corpus without a build:
+`shadertoy-scan` compiles what converted and groups the failures, so the second
+table is a command rather than an afternoon. Six seconds over 204 shaders is
+what makes it something to run *after every change* rather than once a stage —
+which is the point, because the numbers it prints are the only reason to prefer
+one piece of work to another. Its own tabulation is checked by
+`Tests/Coverage`, over a compiler that never ran.
 
 **Rendered pixels.** *Started in stage 4, and load-bearing since stage 5.*
 `Tests/Runtime/ChannelTests`, `ControlFlowTests`, `ArrayTests`, `VectorTests`,
@@ -1240,6 +1518,16 @@ wrong slot changes the ordering; a variable read once outside the loop flattens
 the staircase; a variable read after its own assignment gets the step heights
 wrong. All three compile, all three report nothing, and all three are a picture.
 
+Stage 11's two are both cases where the wrong answer is not merely a picture but
+*the same picture reflected*. A vector times a matrix and a matrix times a
+vector are one node differing in which operand is on the left, so emitting
+either for both compiles, reports nothing and turns the shader the other way;
+`Literals.glsl` carries the two products in a channel each, and they swap places
+across the middle of the frame. And a scalar written into two components at once
+is a broadcast, so `Blanks.glsl` carries the two halves in a channel each and
+the check is that they are *equal* — a rebuild that reached only the first leaves
+the second holding whatever the declaration put there, which is a colour.
+
 Two of the traps this layer was meant to catch are closed by construction
 instead, which is the better place for them: `mod` is recorded as its floored
 form rather than as a call either backend would truncate, and a matrix
@@ -1256,6 +1544,14 @@ that feeds back into itself, because what such a shader accumulates lives in its
 buffer rather than in its clock. `Buffer::clear()` is that fix, and
 `BufferTests` now pins it — a layer above turning into a layer below, which is
 where a finding from this one is supposed to end up.
+
+It is also the layer with the widest gap between what it could catch and what it
+has been pointed at. Stage 11 took the shaders that convert *and* compile from
+51 to 95, and this layer has seen 28 of them — every one that lives here, and
+none of the rest, because the gallery's port list is written by hand and the
+rest are files a licence keeps out of this repository. Closing that is stage 12,
+and it is worth saying plainly that a count of 95 is a claim about compilers
+rather than about pictures.
 
 For the imported shaders there is a fifth check available and no way to automate
 it: the shader's own page. `Corpus/Imported/3l23RK.glsl` is iq's *Pie - distance
@@ -1285,6 +1581,7 @@ non-existent path instead of failing.
 Outputs:
 
 - `build/Tools/Transpile/shadertoy-transpile` — the converter
+- `build/Tools/Scan/shadertoy-scan` — the converter and a compiler over a corpus
 - `build/Apps/Plasma/Plasma.app` — the hand port
 - `build/Apps/PlasmaPort/PlasmaPort.app` — the same shader, transpiled
 - `build/Apps/TunnelPort/TunnelPort.app` — a transpiled port reading a channel
@@ -1293,7 +1590,7 @@ Outputs:
 - `build/Apps/Gallery/Gallery.app` — the whole corpus, one shader at a time
 - `build/Tools/Corpus/shadertoy-fetch` — the corpus fetcher
 - `build/Tests/Glsl/GlslTests`, `build/Tests/Runtime/RuntimeTests`,
-  `build/Tests/Corpus/CorpusTests`
+  `build/Tests/Corpus/CorpusTests`, `build/Tests/Coverage/CoverageTests`
 
 ## On licensing the corpus
 

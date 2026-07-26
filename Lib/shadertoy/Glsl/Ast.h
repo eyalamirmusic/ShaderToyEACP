@@ -161,6 +161,40 @@ struct Shader
         return nullptr;
     }
 
+    // Which helper a call of that many arguments names. GLSL overloads on the
+    // parameter types as well as on their number - a shader carrying float,
+    // vec2 and vec3 versions of saturate() is ordinary - and nothing here knows
+    // the type of an argument, so the count is as far as this resolves.
+    //
+    // Where the count still leaves more than one, the call is ambiguous rather
+    // than resolved. Taking the first was the alternative and it is worse than
+    // a gap: it inlines a body shaped for arguments the call did not pass, and
+    // the shader converts, compiles and draws something else.
+    struct Resolution
+    {
+        const Function* function = nullptr;
+        bool ambiguous = false;
+    };
+
+    Resolution resolve(const std::string& wanted, int arguments) const
+    {
+        auto found = Resolution {};
+        auto matches = 0;
+
+        for (const auto& candidate: functions)
+            if (candidate.name == wanted
+                && (int) candidate.parameters.size() == arguments)
+            {
+                found.function = &candidate;
+                ++matches;
+            }
+
+        if (matches <= 1)
+            return found;
+
+        return {nullptr, true};
+    }
+
     Vector<Expr> nodes;
     Vector<Block> blocks;
     Vector<Function> functions;

@@ -51,6 +51,17 @@ TranspileResult convert(const std::string& body)
                          + body + "\n}\n",
                      "TestShader");
 }
+
+// The same, with helpers above it, for the tests that are about what happens
+// between a call and the body it names.
+TranspileResult convertWith(const std::string& helpers, const std::string& body)
+{
+    return transpile(helpers
+                         + "void mainImage(out vec4 fragColor, in vec2 fragCoord)\n"
+                           "{\n"
+                         + body + "\n}\n",
+                     "TestShader");
+}
 } // namespace
 
 // Straight-line code is the whole of stage 1: locals, arithmetic, swizzles and
@@ -353,16 +364,133 @@ auto tMatrixConstructors = test("Glsl/matrixConstructors") = []
 };
 
 // GLSL reads `vector * matrix` as the row vector on the left, which is the
-// transposed product - a different value from the one the EDSL spells, so it is
-// reported rather than quietly emitted the other way round.
-auto tVectorTimesMatrix = test("Glsl/vectorTimesMatrixIsReported") = []
+// product against the matrix's rows rather than its columns - a different value
+// from `matrix * vector` and, since stage 11, one the EDSL spells too. So the
+// order the shader wrote is the order the port writes, and what pins that it
+// stayed that way round is a codegen test in eacp: both are one Mul node here.
+auto tVectorTimesMatrix = test("Glsl/vectorTimesMatrixKeepsItsOrder") = []
 {
     auto result = convert("    mat2 m = mat2(iTime, 0.0, 0.0, iTime);\n"
                           "    vec2 v = fragCoord * m;\n"
                           "    fragColor = vec4(v, 0.0, 1.0);");
 
+    check(result.ok());
+    check(contains(result.code, "fragCoord * m"));
+};
+
+// A matrix built only from literals needs a handle per column, not one for the
+// whole constructor: the EDSL takes the columns, so each is a vector
+// constructor of its own and each needs something to take a graph from. The
+// same applies to a matrix whose names all land in one column.
+auto tLiteralMatrixColumns = test("Glsl/literalMatrixColumnsAreAnchored") = []
+{
+    auto result = convert("    mat2 m = mat2(0.6, 0.8, -0.8, 0.6);\n"
+                          "    fragColor = vec4(m * fragCoord, 0.0, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "float2x2(float2(constant(0.6f), 0.8f)"));
+    check(contains(result.code, "float2(constant(-0.8f), 0.6f))"));
+
+    auto partial = convert("    mat2 m = mat2(iTime, 0.0, 0.0, 0.0);\n"
+                           "    fragColor = vec4(m * fragCoord, 0.0, 1.0);");
+
+    check(partial.ok());
+    check(contains(partial.code, "float2(constant(0.0f), 0.0f))"));
+};
+
+// GLSL's == and != on two vectors compare the whole value and yield one bool;
+// it is equal() and notEqual() that are componentwise. Both languages under the
+// EDSL give the operator itself to a pair of vectors and yield a mask instead,
+// so what says what the shader said is that mask collapsed - and getting this
+// wrong is a Bool3 handed to something that wanted a condition.
+auto tVectorEquality = test("Glsl/vectorEqualityCollapses") = []
+{
+    auto result = convert("    vec3 a = vec3(fragCoord, 0.0);\n"
+                          "    vec3 b = vec3(iTime);\n"
+                          "    float lit = (a == b) ? 1.0 : 0.0;\n"
+                          "    float unlit = (a != b) ? 1.0 : 0.0;\n"
+                          "    fragColor = vec4(lit, unlit, 0.0, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "all(a == b)"));
+    check(contains(result.code, "any(a != b)"));
+
+    // The componentwise ones stay componentwise: that is what they are for.
+    auto mask = convert("    vec2 a = fragCoord;\n"
+                        "    vec2 b = vec2(iTime);\n"
+                        "    fragColor = vec4(all(equal(a, b)) ? 1.0 : 0.0);");
+
+    check(mask.ok());
+    check(contains(mask.code, "all(a == b)"));
+};
+
+// A local declared without an initialiser is declared with a zero rather than
+// deferred to the assignment that follows it, because a name can be read before
+// it is ever assigned - a write to part of it rebuilds the whole value out of
+// the components it is not writing, and reads every one of them.
+auto tUninitialisedDeclaration = test("Glsl/uninitialisedLocalsAreDeclared") = []
+{
+    auto result = convert("    vec4 q;\n"
+                          "    q.x = fragCoord.x;\n"
+                          "    q.yzw = vec3(iTime);\n"
+                          "    fragColor = q;");
+
+    check(result.ok());
+    check(
+        contains(result.code, "auto q = float4(constant(0.0f), 0.0f, 0.0f, 0.0f);"));
+    check(!contains(result.code, "auto q = float4(fragCoord"));
+};
+
+// A shader may call a local anything, including the name of something the port
+// needs in scope - `float cos = cos(t);` is ordinary GLSL, because GLSL's
+// builtins are not names in a scope. Taking the name here would shadow the very
+// thing the next line calls.
+auto tShadowedIntrinsic = test("Glsl/localsDoNotShadowTheEdsl") = []
+{
+    auto result = convert("    float cos = cos(iTime);\n"
+                          "    float mix = mix(cos, 1.0, 0.5);\n"
+                          "    fragColor = vec4(mix, cos, 0.0, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "auto cos_2 = cos(iTime);"));
+    check(contains(result.code, "auto mix_2 = mix(cos_2, 1.0f, 0.5f);"));
+};
+
+// A scalar written into more than one component is broadcast across them, the
+// way GLSL broadcasts it: `p.xy += t` adds the one value to both. The rebuild
+// reads a component per slot it fills, and a scalar has none to read.
+auto tScalarComponentWrite = test("Glsl/aScalarComponentWriteBroadcasts") = []
+{
+    auto result = convert("    vec3 p = vec3(fragCoord, 1.0);\n"
+                          "    p.xy += 0.05 * iTime;\n"
+                          "    fragColor = vec4(p, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "p.x() + p_xy, p.y() + p_xy"));
+};
+
+// GLSL overloads a helper on its parameter types as well as on their number,
+// and nothing here infers the type of an argument - so a name that resolves to
+// several helpers of one arity is not one the port can inline. Reporting it is
+// what stops a body shaped for other arguments being inlined instead, which
+// converts, compiles and draws something else.
+auto tOverloadedHelper = test("Glsl/anOverloadedHelperIsNotInlined") = []
+{
+    auto result =
+        convertWith("float sat(float a) { return clamp(a, 0.0, 1.0); }\n"
+                    "vec3 sat(vec3 a) { return clamp(a, 0.0, 1.0); }\n",
+                    "    fragColor = vec4(sat(vec3(fragCoord, 0.0)), 1.0);");
+
     check(!result.ok());
-    check(reports(result, Glsl::DiagnosticKind::UnsupportedType, "vector * matrix"));
+    check(reports(result, Glsl::DiagnosticKind::UserFunction, "sat"));
+
+    // One of each arity still resolves: the count is what this can tell apart.
+    auto counted =
+        convertWith("float f(float a) { return a * 2.0; }\n"
+                    "float f(float a, float b) { return a + b; }\n",
+                    "    fragColor = vec4(f(iTime), f(iTime, 1.0), 0.0, 1.0);");
+
+    check(counted.ok());
 };
 
 // A loop bounded by a constant becomes that many copies of its body, with the

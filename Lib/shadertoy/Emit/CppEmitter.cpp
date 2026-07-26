@@ -697,13 +697,20 @@ private:
                           ");");
         }
 
+        // A declaration with no initialiser is spelled with a zero rather than
+        // deferred to the assignment that follows, because a name can be read
+        // before it is ever assigned: `vec4 q;` then `q.x = ...` rebuilds the
+        // whole value out of the components it is not writing, and `vec2 ro;`
+        // handed to a helper as an out parameter is bound by the inliner before
+        // anything has been written to it. Both read a name that a deferred
+        // declaration has not introduced yet. GLSL leaves the value undefined,
+        // so the zero is a value it is free to have.
         if (statement.value < 0)
         {
-            // A declaration with no initialiser has nothing to bind an
-            // `auto` to; the assignment that follows becomes the
-            // declaration instead.
-            pending[statement.name] = declared;
-            return {};
+            types[statement.name] = declared;
+
+            return indent + "auto " + statement.name + " = " + zeroOf(declared)
+                   + ";\n";
         }
 
         types[statement.name] =
@@ -739,20 +746,6 @@ private:
 
     std::string emitAssign(const Statement& statement)
     {
-        auto found = pending.find(statement.name);
-
-        if (found != pending.end())
-        {
-            types[statement.name] = found->second != Type::Unknown
-                                        ? found->second
-                                        : typeOf(statement.value);
-            pending.erase(found);
-            markIntegers(statement.value, isInteger(types[statement.name]));
-
-            return layoutValue(
-                indent + "auto " + statement.name + " = ", statement.value, ";");
-        }
-
         if (types.count(statement.name) == 0)
         {
             // The first write to the out parameter, or to a name whose
@@ -798,17 +791,19 @@ private:
     }
 
     // The value a variable declared without one starts at, which GLSL leaves
-    // undefined and the port has to spell.
+    // undefined and the port has to spell. Every one of them is a handle rather
+    // than a C++ literal, since this is what a plain declaration binds as well
+    // as what a var() is opened with, and `auto x = 0.0f` would bind a float.
     std::string zeroOf(Type type)
     {
         switch (type)
         {
             case Type::Bool:
-                return "false";
+                return "boolean(false)";
             case Type::Int:
                 return "integer(0)";
             case Type::Float:
-                return "0.0f";
+                return "constant(0.0f)";
             case Type::Vec2:
                 return "float2(constant(0.0f), 0.0f)";
             case Type::Vec3:
@@ -827,6 +822,15 @@ private:
                 return "bool3(boolean(false), false, false)";
             case Type::BVec4:
                 return "bool4(boolean(false), false, false, false)";
+            case Type::Mat2:
+                return "float2x2(" + zeroOf(Type::Vec2) + ", " + zeroOf(Type::Vec2)
+                       + ")";
+            case Type::Mat3:
+                return "float3x3(" + zeroOf(Type::Vec3) + ", " + zeroOf(Type::Vec3)
+                       + ", " + zeroOf(Type::Vec3) + ")";
+            case Type::Mat4:
+                return "float4x4(" + zeroOf(Type::Vec4) + ", " + zeroOf(Type::Vec4)
+                       + ", " + zeroOf(Type::Vec4) + ", " + zeroOf(Type::Vec4) + ")";
             default:
                 break;
         }
@@ -940,7 +944,7 @@ private:
         auto matrix = typeFromGlslName(expr.text);
 
         if (matrixOrder(matrix) > 0)
-            return {edslMatrixName(matrix), {}, matrixColumns(node, expr, matrix)};
+            return {edslMatrixName(matrix), {}, matrixColumns(expr, matrix)};
 
         if (isTextureCall(expr.text))
             return {passthroughTextureCall(expr), expr.args};
@@ -1564,7 +1568,7 @@ private:
         if (expr.text == "true" || expr.text == "false")
             return "boolean(" + expr.text + ")";
 
-        if (types.count(expr.text) != 0 || pending.count(expr.text) != 0)
+        if (types.count(expr.text) != 0)
             return readOf(expr.text);
 
         report(DiagnosticKind::UnknownIdentifier, expr.text);
@@ -1645,14 +1649,18 @@ private:
 
         if (precedence > 0 && (integer || !integerOnly(expr.text)))
         {
-            // GLSL reads `vector * matrix` as the row vector on the left, which
-            // is the transposed product - a different value from the matrix *
-            // vector the EDSL spells, not a missing overload.
-            if (expr.text == "*" && matrixOrder(typeOf(expr.args[1])) > 0
-                && widthOf(typeOf(expr.args[0])) > 1)
+            // GLSL's == and != on two vectors compare the whole value and yield
+            // one bool; it is equal() and notEqual() that are componentwise,
+            // and those arrive as calls. Both languages under the EDSL give the
+            // operator itself to a pair of vectors and yield a mask instead, so
+            // what says what the shader said is that mask collapsed.
+            auto wide = widthOf(typeOf(expr.args[0])) > 1
+                        && widthOf(typeOf(expr.args[1])) > 1;
+
+            if (wide && (expr.text == "==" || expr.text == "!="))
             {
-                report(DiagnosticKind::UnsupportedType, "vector * matrix");
-                return "/* unsupported: vector * matrix */ (" + left + ")";
+                auto collapse = expr.text == "==" ? "all(" : "any(";
+                return collapse + left + " " + expr.text + " " + right + ")";
             }
 
             return left + " " + expr.text + " " + right;
@@ -1684,6 +1692,14 @@ private:
         // already reported where the struct was declared.
         if (typeOf(expr.args[0]) == Type::Struct)
             return "/* unsupported: struct field */ " + object;
+
+        // One component of a scalar is the scalar. Nothing in GLSL spells that
+        // and nothing here parses it: what produces one is the rebuild a write
+        // to part of a value becomes, which reads a component per slot it
+        // fills - and a scalar right-hand side is broadcast across all of them.
+        // `p.xy += 0.05 * iTime` adds the one value to both components.
+        if (expr.text.size() == 1 && widthOf(typeOf(expr.args[0])) == 1)
+            return object;
 
         auto canonical = std::string {};
 
@@ -1719,13 +1735,16 @@ private:
         // `float(x)` is a conversion, and after unrolling has substituted the
         // counter it is usually a conversion of a literal. Over a float it is
         // the identity, and the parentheses stay where dropping them would
-        // re-bind the expression around it; over an integer it is the crossing
-        // between the two vocabularies, which the EDSL spells out.
+        // re-bind the expression around it; over anything else it is a crossing
+        // between vocabularies, which the EDSL spells out. A condition is one
+        // of those - `float(a > b)` is 1.0 or 0.0 and is what a shader counting
+        // how many of its tests passed adds up - and treating it as the
+        // identity left a bool where a number was wanted.
         if (expr.text == "float" && expr.args.size() == 1)
         {
             auto inner = emitExpression(expr.args[0]);
 
-            if (isInteger(typeOf(expr.args[0])))
+            if (familyOf(typeOf(expr.args[0])) != Family::Float)
                 return "toFloat(" + inner + ")";
 
             auto grouped = shader.expr(expr.args[0]).kind == ExprKind::Binary
@@ -1780,7 +1799,7 @@ private:
         auto matrix = typeFromGlslName(expr.text);
 
         if (matrixOrder(matrix) > 0)
-            return emitMatrixConstructor(node, expr, matrix);
+            return emitMatrixConstructor(expr, matrix);
 
         const auto* builtin = findBuiltin(expr.text);
 
@@ -1911,7 +1930,7 @@ private:
     // rather than the finished call: regrouped, they are no longer the argument
     // nodes the wrapping path knows how to re-walk. Empty for a matrix built in
     // none of the three ways.
-    Vector<std::string> matrixColumns(int node, const Expr& expr, Type type)
+    Vector<std::string> matrixColumns(const Expr& expr, Type type)
     {
         auto order = matrixOrder(type);
         auto columns = Vector<std::string> {};
@@ -1927,39 +1946,61 @@ private:
         }
 
         auto components = Vector<std::string> {};
+        auto named = Vector<int> {};
 
         if ((int) expr.args.size() == order * order)
         {
             for (auto arg: expr.args)
+            {
                 components.add(emitExpression(arg));
+                named.add(mentionsAName(arg) ? 1 : 0);
+            }
         }
         else if (expr.args.size() == 1 && typeOf(expr.args[0]) == Type::Float)
         {
             // mat2(s) puts s down the diagonal and zero everywhere else.
             auto scalar = emitExpression(expr.args[0]);
+            auto isName = mentionsAName(expr.args[0]);
 
             for (auto column = 0; column < order; ++column)
                 for (auto row = 0; row < order; ++row)
+                {
                     components.add(row == column ? scalar : "0.0f");
+                    named.add(row == column && isName ? 1 : 0);
+                }
         }
         else
         {
             return columns;
         }
 
-        // Like a vector built only from literals, a matrix built only from them
-        // has no value handle to take a graph from - see emitVectorConstructor.
-        if (!mentionsAName(node))
-            components[0] = "constant(" + components[0] + ")";
-
         auto columnName = "float" + std::to_string(order);
 
         for (auto column = 0; column < order; ++column)
         {
+            auto first = column * order;
+
+            // Like a vector built only from literals, a column built only from
+            // them has no value handle to take a graph from - see
+            // emitVectorConstructor. The regrouping is what makes this per
+            // column rather than once: each column is a constructor of its own,
+            // so a matrix whose names all land in one of them leaves the others
+            // needing an anchor apiece.
+            auto anchor = true;
+
+            for (auto row = 0; row < order; ++row)
+                anchor = anchor && named[first + row] == 0;
+
             auto parts = std::string {};
 
             for (auto row = 0; row < order; ++row)
-                parts += (row > 0 ? ", " : "") + components[column * order + row];
+            {
+                const auto& component = components[first + row];
+
+                parts += (row > 0 ? ", " : "")
+                         + (anchor && row == 0 ? "constant(" + component + ")"
+                                               : component);
+            }
 
             columns.add(columnName + "(" + parts + ")");
         }
@@ -1967,9 +2008,9 @@ private:
         return columns;
     }
 
-    std::string emitMatrixConstructor(int node, const Expr& expr, Type type)
+    std::string emitMatrixConstructor(const Expr& expr, Type type)
     {
-        auto columns = matrixColumns(node, expr, type);
+        auto columns = matrixColumns(expr, type);
 
         if (columns.empty())
         {
@@ -2101,7 +2142,6 @@ private:
     std::string structName;
 
     std::map<std::string, Type> types;
-    std::map<std::string, Type> pending;
 
     // The element type of every name declared as a constant array, which is
     // what a subscript of it reads and what the array's own type does not say.

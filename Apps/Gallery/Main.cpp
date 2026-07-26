@@ -1,6 +1,7 @@
 #include <shadertoy/Runtime/ChannelImages.h>
 
 #include <Basis.h>
+#include <Blanks.h>
 #include <Channels.h>
 #include <Checker.h>
 #include <Compose.h>
@@ -9,6 +10,7 @@
 #include <Gradient.h>
 #include <Kaleido.h>
 #include <Lattice.h>
+#include <Literals.h>
 #include <Macros.h>
 #include <Mandelbrot.h>
 #include <Palette.h>
@@ -149,6 +151,8 @@ Vector<Entry> corpus()
     entries.add(entryFor<Ports::Macros>("Macros"));
     entries.add(entryFor<Ports::Compose>("Compose"));
     entries.add(entryFor<Ports::Basis>("Basis"));
+    entries.add(entryFor<Ports::Literals>("Literals"));
+    entries.add(entryFor<Ports::Blanks>("Blanks"));
 
     // And the ones nobody here wrote: real Shadertoys, named after their ids
     // because that is what the site names them, and credited to the author the

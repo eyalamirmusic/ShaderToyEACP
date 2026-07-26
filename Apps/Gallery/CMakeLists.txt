@@ -7,6 +7,7 @@ target_link_libraries(Gallery PRIVATE shadertoy-runtime)
 # report cannot make and the reason the list below is not filtered.
 set(GALLERY_SHADERS
         Basis
+        Blanks
         Channels
         Checker
         Compose
@@ -15,6 +16,7 @@ set(GALLERY_SHADERS
         Gradient
         Kaleido
         Lattice
+        Literals
         Macros
         Mandelbrot
         Palette

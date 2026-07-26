@@ -6,6 +6,7 @@ nano_add_executable(RuntimeTests
             ChannelTests.cpp
             ComponentTests.cpp
             ControlFlowTests.cpp
+            LiteralTests.cpp
             ProgramTests.cpp
             PortTests.cpp
             StructTests.cpp
@@ -65,3 +66,11 @@ shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Comp
 # back through it with the transpose, which for an orthonormal frame is the
 # inverse neither language has.
 shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Basis.glsl NAME Basis)
+
+# Stage 11: a literal in every argument position an intrinsic has one, the two
+# products a matrix has and a matrix scaled by a scalar in Literals; and in
+# Blanks the things a shader does before it has written anything - a local
+# declared without a value, a scalar broadcast across two components at once, a
+# whole-vector equality and a local named after the intrinsic beside it.
+shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Literals.glsl NAME Literals)
+shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Blanks.glsl NAME Blanks)

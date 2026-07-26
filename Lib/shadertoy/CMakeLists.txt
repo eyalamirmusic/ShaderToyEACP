@@ -33,6 +33,21 @@ target_sources(shadertoy-corpus PRIVATE
 set_default_target_setting(shadertoy-corpus)
 shadertoy_enable_unity_build(shadertoy-corpus)
 
+# Both coverage tables over one corpus: what does not convert, and what
+# converts and then does not compile. The compile step is a std::function, so
+# this library needs no toolchain and a test can drive the tabulation over
+# whatever a compiler is pretended to have said.
+add_library(shadertoy-coverage STATIC)
+target_include_directories(shadertoy-coverage PUBLIC ${CMAKE_CURRENT_LIST_DIR}/../)
+
+target_link_libraries(shadertoy-coverage PUBLIC shadertoy-glsl)
+
+target_sources(shadertoy-coverage PRIVATE
+        Coverage/Coverage.cpp)
+
+set_default_target_setting(shadertoy-coverage)
+shadertoy_enable_unity_build(shadertoy-coverage)
+
 # What a ported shader runs inside.
 add_library(shadertoy-runtime STATIC)
 target_include_directories(shadertoy-runtime PUBLIC ${CMAKE_CURRENT_LIST_DIR}/../)
