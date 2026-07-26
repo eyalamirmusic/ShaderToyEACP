@@ -17,7 +17,13 @@ enum class Type
 {
     Unknown,
     Bool, // what a comparison yields and a branch or a select tests
+    BVec2, // and what comparing two vectors yields, one component at a time
+    BVec3,
+    BVec4,
     Int, // what subscripts an array, and what % and the bitwise set take
+    IVec2, // the cell a shader working on a grid counts
+    IVec3,
+    IVec4,
     Float,
     Vec2,
     Vec3,
@@ -26,36 +32,93 @@ enum class Type
     Mat3,
     Mat4,
     Channel, // a texture channel, which is sampled rather than evaluated
-    Array // a constant array, whose element type is tracked beside the name
+    Array, // a constant array, whose element type is tracked beside the name
+    Struct // an aggregate the EDSL has no counterpart for at all
 };
 
-// How many components a value broadcasts across. Zero for everything that never
-// broadcasts, which is what keeps an Int from winning the widening rule below:
-// an integer beside a float is a type error in GLSL, not a conversion.
-int componentsOf(Type type)
+// Which of the three vocabularies a type belongs to. GLSL has no implicit
+// conversion between them and neither does the EDSL, so this is what decides
+// whether an expression needs a crossing written into it rather than a
+// broadcast.
+enum class Family
+{
+    Float,
+    Int,
+    Bool,
+    Other // a matrix, a channel, an array - nothing that crosses or broadcasts
+};
+
+Family familyOf(Type type)
 {
     switch (type)
     {
         case Type::Float:
+        case Type::Vec2:
+        case Type::Vec3:
+        case Type::Vec4:
+            return Family::Float;
+        case Type::Int:
+        case Type::IVec2:
+        case Type::IVec3:
+        case Type::IVec4:
+            return Family::Int;
+        case Type::Bool:
+        case Type::BVec2:
+        case Type::BVec3:
+        case Type::BVec4:
+            return Family::Bool;
+        default:
+            return Family::Other;
+    }
+}
+
+// How many components a value has, and so how wide anything built beside it
+// broadcasts to. Zero for everything outside the three families, which is what
+// keeps a matrix out of the widening rule below.
+int widthOf(Type type)
+{
+    switch (type)
+    {
+        case Type::Float:
+        case Type::Int:
+        case Type::Bool:
             return 1;
         case Type::Vec2:
+        case Type::IVec2:
+        case Type::BVec2:
             return 2;
         case Type::Vec3:
+        case Type::IVec3:
+        case Type::BVec3:
             return 3;
         case Type::Vec4:
+        case Type::IVec4:
+        case Type::BVec4:
             return 4;
-        case Type::Bool:
-        case Type::Int:
-        case Type::Mat2:
-        case Type::Mat3:
-        case Type::Mat4:
-        case Type::Channel:
-        case Type::Array:
-        case Type::Unknown:
+        default:
             return 0;
     }
+}
 
-    return 0;
+// The member of a family at a given width - what a swizzle of one lands in, and
+// what a comparison of two yields.
+Type vectorOf(Family family, int width)
+{
+    constexpr Type members[3][4] = {
+        {Type::Float, Type::Vec2, Type::Vec3, Type::Vec4},
+        {Type::Int, Type::IVec2, Type::IVec3, Type::IVec4},
+        {Type::Bool, Type::BVec2, Type::BVec3, Type::BVec4},
+    };
+
+    if (family == Family::Other || width < 1 || width > 4)
+        return Type::Unknown;
+
+    return members[(int) family][width - 1];
+}
+
+bool isInteger(Type type)
+{
+    return familyOf(type) == Family::Int;
 }
 
 // The width of a square matrix's columns, and the number of them; zero for
@@ -77,19 +140,7 @@ int matrixOrder(Type type)
 
 Type typeOfWidth(int components)
 {
-    switch (components)
-    {
-        case 1:
-            return Type::Float;
-        case 2:
-            return Type::Vec2;
-        case 3:
-            return Type::Vec3;
-        case 4:
-            return Type::Vec4;
-        default:
-            return Type::Unknown;
-    }
+    return vectorOf(Family::Float, components);
 }
 
 Type typeFromGlslName(std::string_view name)
@@ -106,6 +157,18 @@ Type typeFromGlslName(std::string_view name)
         return Type::Vec3;
     if (name == "vec4")
         return Type::Vec4;
+    if (name == "ivec2")
+        return Type::IVec2;
+    if (name == "ivec3")
+        return Type::IVec3;
+    if (name == "ivec4")
+        return Type::IVec4;
+    if (name == "bvec2")
+        return Type::BVec2;
+    if (name == "bvec3")
+        return Type::BVec3;
+    if (name == "bvec4")
+        return Type::BVec4;
     if (name == "mat2")
         return Type::Mat2;
     if (name == "mat3")
@@ -114,6 +177,28 @@ Type typeFromGlslName(std::string_view name)
         return Type::Mat4;
 
     return Type::Unknown;
+}
+
+// The EDSL's spelling of a vector constructor, and of the thing that anchors one
+// built purely from literals: a value handle for the graph to be taken from,
+// which a literal on its own is not. A boolean needs no entry - every `true` and
+// `false` a port emits is already anchored where it is read.
+const char* constructorName(Family family)
+{
+    switch (family)
+    {
+        case Family::Int:
+            return "int";
+        case Family::Bool:
+            return "bool";
+        default:
+            return "float";
+    }
+}
+
+const char* anchorName(Family family)
+{
+    return family == Family::Int ? "integer" : "constant";
 }
 
 // The EDSL's spelling of a matrix type, which follows the shading languages
@@ -142,6 +227,7 @@ enum class ResultShape
     LikeArg1,
     LikeArg2,
     Scalar,
+    Boolean, // a mask collapsed to the one condition a branch can test
     Vec3,
     Vec4
 };
@@ -197,6 +283,11 @@ constexpr Builtin builtins[] = {
     {"dot", "dot", ResultShape::Scalar},
     {"cross", "cross", ResultShape::Vec3},
 
+    // What collapses a mask into a condition. GLSL and both shading languages
+    // agree on the names, so these pass straight through.
+    {"any", "any", ResultShape::Boolean},
+    {"all", "all", ResultShape::Boolean},
+
     // Everything below is a gap: GLSL has it, the EDSL does not. The matrix
     // three need an operation on Float2x2/Float3x3 beyond construction and
     // multiplication, which is where those types stop today.
@@ -236,18 +327,39 @@ int channelIndex(const std::string& name)
     return channel >= 0 && channel < channelCount ? channel : -1;
 }
 
-// vec2/vec3/vec4 and their EDSL counterparts. mat2/mat3/mat4 deliberately fall
-// through to the unsupported path: the EDSL has only float4x4.
+// vec2/vec3/vec4, ivec2..4 and bvec2..4, each with an EDSL counterpart of the
+// same width in the same family. Zero width for anything that is not one of the
+// nine, which is what sends a matrix constructor down its own path.
 int vectorConstructorWidth(const std::string& name)
 {
-    if (name == "vec2")
-        return 2;
-    if (name == "vec3")
-        return 3;
-    if (name == "vec4")
-        return 4;
+    auto type = typeFromGlslName(name);
+    auto width = familyOf(type) == Family::Other ? 0 : widthOf(type);
 
-    return 0;
+    // `float`, `int` and `bool` name the scalars, which are conversions rather
+    // than constructors and are emitted as such.
+    return width > 1 ? width : 0;
+}
+
+// The componentwise comparisons, which GLSL spells as calls because it reserves
+// the operators for scalars. Both languages the EDSL emits into give the
+// operator itself to a pair of vectors and yield a mask, so a port writes what
+// the shader meant: lessThan(a, b) is a < b.
+const char* comparisonOperator(const std::string& name)
+{
+    if (name == "lessThan")
+        return "<";
+    if (name == "lessThanEqual")
+        return "<=";
+    if (name == "greaterThan")
+        return ">";
+    if (name == "greaterThanEqual")
+        return ">=";
+    if (name == "equal")
+        return "==";
+    if (name == "notEqual")
+        return "!=";
+
+    return nullptr;
 }
 
 // The x/y/z/w spelling of one component from any of GLSL's three sets.
@@ -566,8 +678,8 @@ private:
         if (statement.isArray)
             return emitArrayDeclare(statement);
 
-        auto declared = typeFromGlslName(statement.type);
-        markIntegers(statement.value, declared == Type::Int);
+        auto declared = declaredType(statement.type);
+        markIntegers(statement.value, isInteger(declared));
 
         if (statement.isVariable)
         {
@@ -634,7 +746,7 @@ private:
                                         ? found->second
                                         : typeOf(statement.value);
             pending.erase(found);
-            markIntegers(statement.value, types[statement.name] == Type::Int);
+            markIntegers(statement.value, isInteger(types[statement.name]));
 
             return layoutValue(
                 indent + "auto " + statement.name + " = ", statement.value, ";");
@@ -647,13 +759,13 @@ private:
             types[statement.name] = statement.name == shader.fragColor
                                         ? Type::Vec4
                                         : typeOf(statement.value);
-            markIntegers(statement.value, types[statement.name] == Type::Int);
+            markIntegers(statement.value, isInteger(types[statement.name]));
 
             return layoutValue(
                 indent + "auto " + statement.name + " = ", statement.value, ";");
         }
 
-        markIntegers(statement.value, types[statement.name] == Type::Int);
+        markIntegers(statement.value, isInteger(types[statement.name]));
 
         // `col += x` becomes `col = col + x`, with the right-hand side
         // parenthesised only where the compound operator would otherwise
@@ -702,6 +814,18 @@ private:
                 return "float3(constant(0.0f), 0.0f, 0.0f)";
             case Type::Vec4:
                 return "float4(constant(0.0f), 0.0f, 0.0f, 0.0f)";
+            case Type::IVec2:
+                return "int2(integer(0), 0)";
+            case Type::IVec3:
+                return "int3(integer(0), 0, 0)";
+            case Type::IVec4:
+                return "int4(integer(0), 0, 0, 0)";
+            case Type::BVec2:
+                return "bool2(boolean(false), false)";
+            case Type::BVec3:
+                return "bool3(boolean(false), false, false)";
+            case Type::BVec4:
+                return "bool4(boolean(false), false, false, false)";
             default:
                 break;
         }
@@ -749,8 +873,7 @@ private:
             return single;
 
         const auto& expr = shader.expr(node);
-        auto precedence =
-            expr.kind == ExprKind::Binary ? precedenceOf(expr.text) : 0;
+        auto precedence = precedenceOf(operatorOf(node));
 
         if (precedence > 0)
         {
@@ -795,13 +918,20 @@ private:
 
         if (width > 0)
         {
-            auto broadcasts = expr.args.size() == 1
-                              && typeOf(expr.args[0]) == Type::Float && width > 1;
+            auto family = familyOf(typeFromGlslName(expr.text));
 
-            if (broadcasts || !mentionsAName(node))
-                return {};
+            // A lone argument is either a broadcast or a whole-value
+            // conversion, and neither emits as name(args...) over the nodes
+            // this re-walks; nor does a component that has to cross
+            // vocabularies, nor a constructor that anchors itself.
+            auto regroups =
+                !mentionsAName(node) || (expr.args.size() == 1 && width > 1);
 
-            return "float" + std::to_string(width);
+            for (auto argument: expr.args)
+                regroups = regroups || !readsInFamily(argument, family);
+
+            return regroups ? std::string {}
+                            : constructorName(family) + std::to_string(width);
         }
 
         if (isTextureCall(expr.text))
@@ -901,16 +1031,35 @@ private:
 
     bool needsParentheses(int node, int parentPrecedence, bool onTheRight) const
     {
-        if (node < 0 || shader.expr(node).kind != ExprKind::Binary)
-            return false;
-
-        auto precedence = precedenceOf(shader.expr(node).text);
+        auto precedence = precedenceOf(operatorOf(node));
 
         if (precedence == 0)
             return false;
 
         return precedence < parentPrecedence
                || (onTheRight && precedence == parentPrecedence);
+    }
+
+    // The operator a node emits as, whether the GLSL wrote it as one or as the
+    // call GLSL makes a componentwise comparison. Empty for anything that is not
+    // an operator at all - which is what the parenthesising and the wrapping
+    // paths both key on, so a comparison written as a call is grouped by the
+    // same rules as the `<` a scalar one is written with.
+    std::string operatorOf(int node) const
+    {
+        if (node < 0)
+            return {};
+
+        const auto& expr = shader.expr(node);
+
+        if (expr.kind == ExprKind::Binary)
+            return expr.text;
+
+        if (expr.kind == ExprKind::Call && expr.args.size() == 2)
+            if (const auto* spelling = comparisonOperator(expr.text))
+                return spelling;
+
+        return {};
     }
 
     // Where a piece of text that may have wrapped leaves the cursor.
@@ -931,12 +1080,14 @@ private:
                       int precedence,
                       Vector<std::pair<std::string, int>>& terms) const
     {
-        const auto& expr = shader.expr(node);
+        auto op = operatorOf(node);
 
-        if (expr.kind == ExprKind::Binary && precedenceOf(expr.text) == precedence)
+        if (precedenceOf(op) == precedence)
         {
+            const auto& expr = shader.expr(node);
+
             flattenChain(expr.args[0], precedence, terms);
-            terms.add({expr.text, expr.args[1]});
+            terms.add({op, expr.args[1]});
             return;
         }
 
@@ -979,20 +1130,21 @@ private:
 
                 // An integer beside an integer literal is still an integer.
                 // GLSL has no implicit conversion between the two vocabularies
-                // and neither does the EDSL, so nothing here widens one.
-                if (left == Type::Int || right == Type::Int)
-                    return Type::Int;
+                // and neither does the EDSL, so nothing here widens one out of
+                // its family - only within it, where a vector next to a scalar
+                // broadcasts exactly as the EDSL's operators do.
+                if (isInteger(left) || isInteger(right))
+                    return vectorOf(Family::Int,
+                                    std::max(widthOf(left), widthOf(right)));
 
-                // A vector next to a scalar broadcasts, so the wider operand
-                // wins - which is also what the EDSL's operators do.
-                return componentsOf(left) >= componentsOf(right) ? left : right;
+                return widthOf(left) >= widthOf(right) ? left : right;
             }
 
             case ExprKind::Ternary:
                 return typeOf(expr.args[1]);
 
             case ExprKind::Member:
-                return typeOfWidth((int) expr.text.size());
+                return swizzleType(expr);
 
             case ExprKind::Index:
                 return typeOfIndex(expr);
@@ -1005,6 +1157,32 @@ private:
         }
 
         return Type::Unknown;
+    }
+
+    // A type by name, over the built-in vocabulary plus whatever structs the
+    // shader declared - none of which the EDSL can express, which is exactly
+    // what naming them is for.
+    Type declaredType(const std::string& name) const
+    {
+        return shader.isStructType(name) ? Type::Struct : typeFromGlslName(name);
+    }
+
+    // What a swizzle reads: the family of what it was taken from, at the width
+    // it names. `.x` of an ivec2 is an int and has to cross into float
+    // arithmetic explicitly, the way the GLSL that wrote it had to.
+    //
+    // Unless what it was taken from is a struct, in which case this is a field
+    // and the gap is the aggregate rather than the components named.
+    Type swizzleType(const Expr& expr)
+    {
+        if (typeOf(expr.args[0]) == Type::Struct)
+            return Type::Unknown;
+
+        auto width = (int) expr.text.size();
+        auto family = familyOf(typeOf(expr.args[0]));
+
+        return family == Family::Other ? typeOfWidth(width)
+                                       : vectorOf(family, width);
     }
 
     // What a subscript reads. iChannelResolution is the one array a Shadertoy
@@ -1034,17 +1212,20 @@ private:
 
     Type typeOfCall(const Expr& expr)
     {
-        auto width = vectorConstructorWidth(expr.text);
-
-        if (width > 0)
-            return typeOfWidth(width);
-
         // A channel read is an RGBA texel whichever form it took, and
         // textureSize is the one that is not a read at all.
         if (isTextureCall(expr.text))
             return expr.text == "textureSize" ? Type::Vec2 : Type::Vec4;
 
-        auto declared = typeFromGlslName(expr.text);
+        // A componentwise comparison is a mask as wide as what it compared.
+        if (comparisonOperator(expr.text) != nullptr && expr.args.size() == 2)
+            return vectorOf(Family::Bool, widthOf(typeOf(expr.args[0])));
+
+        // not() negates a mask, so it is shaped like the one it was given.
+        if (expr.text == "not" && expr.args.size() == 1)
+            return typeOf(expr.args[0]);
+
+        auto declared = declaredType(expr.text);
 
         if (declared != Type::Unknown)
             return declared;
@@ -1058,6 +1239,8 @@ private:
         {
             case ResultShape::Scalar:
                 return Type::Float;
+            case ResultShape::Boolean:
+                return Type::Bool;
             case ResultShape::Vec3:
                 return Type::Vec3;
             case ResultShape::Vec4:
@@ -1101,15 +1284,15 @@ private:
                 return;
 
             case ExprKind::Unary:
-                markIntegers(expr.args[0], typeOf(expr.args[0]) == Type::Int);
+                markIntegers(expr.args[0], isInteger(typeOf(expr.args[0])));
                 return;
 
             case ExprKind::Binary:
             {
                 // Either operand being an integer settles it for both, which is
                 // what puts the 3 in `index & 3` and in `3 & index` alike.
-                auto operands = integer || typeOf(expr.args[0]) == Type::Int
-                                || typeOf(expr.args[1]) == Type::Int;
+                auto operands = integer || isInteger(typeOf(expr.args[0]))
+                                || isInteger(typeOf(expr.args[1]));
 
                 markIntegers(expr.args[0], operands);
                 markIntegers(expr.args[1], operands);
@@ -1123,7 +1306,7 @@ private:
                 return;
 
             case ExprKind::Member:
-                markIntegers(expr.args[0], false);
+                markIntegers(expr.args[0], isInteger(typeOf(expr.args[0])));
                 return;
 
             case ExprKind::Index:
@@ -1133,12 +1316,30 @@ private:
 
             case ExprKind::ArrayLiteral:
                 for (auto argument: expr.args)
-                    markIntegers(argument, typeFromGlslName(expr.text) == Type::Int);
+                    markIntegers(argument, isInteger(typeFromGlslName(expr.text)));
 
                 return;
 
             case ExprKind::Call:
             {
+                // A vector constructor decides its arguments one at a time
+                // rather than all together: ivec2(fragCoord / 16.0) converts a
+                // float pair, while ivec2(cell.x, 1) has a literal in it that
+                // has to be spelled as an integer.
+                auto width = vectorConstructorWidth(expr.text);
+
+                if (width > 0)
+                {
+                    auto family = familyOf(typeFromGlslName(expr.text));
+
+                    for (auto argument: expr.args)
+                        markIntegers(argument,
+                                     family == Family::Int
+                                         && readsInFamily(argument, family));
+
+                    return;
+                }
+
                 // A conversion's argument is in the other vocabulary by
                 // definition, which is the whole reason it is written.
                 auto arguments = !isConversion(expr.text) && takesIntegers(expr);
@@ -1151,6 +1352,15 @@ private:
         }
     }
 
+    // Whether an argument filling a component already reads in the family being
+    // built, so that no crossing has to be written around it. A literal counts:
+    // which vocabulary a number is spelled in is decided by where it sits, which
+    // is what markIntegers is for.
+    bool readsInFamily(int node, Family family)
+    {
+        return familyOf(typeOf(node)) == family || !mentionsAName(node);
+    }
+
     static bool isConversion(const std::string& callee)
     {
         return callee == "int" || callee == "uint" || callee == "float"
@@ -1160,7 +1370,7 @@ private:
     bool takesIntegers(const Expr& expr)
     {
         for (auto argument: expr.args)
-            if (typeOf(argument) == Type::Int)
+            if (isInteger(typeOf(argument)))
                 return true;
 
         return false;
@@ -1206,23 +1416,9 @@ private:
     {
         auto text = emitExpression(node);
 
-        if (node < 0)
-            return text;
-
-        const auto& child = shader.expr(node);
-
-        if (child.kind != ExprKind::Binary)
-            return text;
-
-        auto precedence = precedenceOf(child.text);
-
-        if (precedence == 0)
-            return text;
-
-        auto needsParentheses = precedence < parentPrecedence
-                                || (onTheRight && precedence == parentPrecedence);
-
-        return needsParentheses ? "(" + text + ")" : text;
+        return needsParentheses(node, parentPrecedence, onTheRight)
+                   ? "(" + text + ")"
+                   : text;
     }
 
     std::string emitExpression(int node)
@@ -1345,7 +1541,7 @@ private:
             return "!(" + operand + ")";
 
         // What is left is `~`, the one unary operator no float has.
-        if (expr.text == "~" && typeOf(expr.args[0]) == Type::Int)
+        if (expr.text == "~" && isInteger(typeOf(expr.args[0])))
             return compound ? "~(" + operand + ")" : "~" + operand;
 
         report(DiagnosticKind::UnsupportedType, "int " + expr.text);
@@ -1362,7 +1558,7 @@ private:
         // shader reaching one over floats needs the integer type rather than
         // the operator - mod() is what a float tiles with.
         auto integer =
-            typeOf(expr.args[0]) == Type::Int || typeOf(expr.args[1]) == Type::Int;
+            isInteger(typeOf(expr.args[0])) || isInteger(typeOf(expr.args[1]));
 
         if (precedence > 0 && (integer || !integerOnly(expr.text)))
         {
@@ -1370,7 +1566,7 @@ private:
             // is the transposed product - a different value from the matrix *
             // vector the EDSL spells, not a missing overload.
             if (expr.text == "*" && matrixOrder(typeOf(expr.args[1])) > 0
-                && componentsOf(typeOf(expr.args[0])) > 1)
+                && widthOf(typeOf(expr.args[0])) > 1)
             {
                 report(DiagnosticKind::UnsupportedType, "vector * matrix");
                 return "/* unsupported: vector * matrix */ (" + left + ")";
@@ -1386,6 +1582,13 @@ private:
     std::string emitMember(const Expr& expr)
     {
         auto object = emitExpression(expr.args[0]);
+
+        // A field of a struct is not a swizzle that happens to be spelled
+        // oddly: what is missing is the aggregate it was read out of, which is
+        // already reported where the struct was declared.
+        if (typeOf(expr.args[0]) == Type::Struct)
+            return "/* unsupported: struct field */ " + object;
+
         auto canonical = std::string {};
 
         for (auto component: expr.text)
@@ -1415,7 +1618,7 @@ private:
         auto width = vectorConstructorWidth(expr.text);
 
         if (width > 0)
-            return emitVectorConstructor(node, expr, width);
+            return emitVectorCall(node, expr, width);
 
         // `float(x)` is a conversion, and after unrolling has substituted the
         // counter it is usually a conversion of a literal. Over a float it is
@@ -1426,7 +1629,7 @@ private:
         {
             auto inner = emitExpression(expr.args[0]);
 
-            if (typeOf(expr.args[0]) == Type::Int)
+            if (isInteger(typeOf(expr.args[0])))
                 return "toFloat(" + inner + ")";
 
             auto grouped = shader.expr(expr.args[0]).kind == ExprKind::Binary
@@ -1441,17 +1644,39 @@ private:
         if (expr.text == "int" && expr.args.size() == 1)
         {
             auto inner = emitExpression(expr.args[0]);
-            return typeOf(expr.args[0]) == Type::Int ? inner
-                                                     : "toInt(" + inner + ")";
+            return isInteger(typeOf(expr.args[0])) ? inner : "toInt(" + inner + ")";
         }
 
         // `uint` has no fragment-stage counterpart - the EDSL's unsigned type is
-        // the compute thread id - and `bool(x)` has no spelling at all.
-        if (expr.text == "uint" || expr.text == "bool")
+        // the compute thread id - and `bool(x)` has no spelling at all. The
+        // unsigned vectors go with the scalar, for the same reason.
+        if (expr.text == "uint" || expr.text == "bool"
+            || expr.text.rfind("uvec", 0) == 0)
         {
             report(DiagnosticKind::UnsupportedType, expr.text);
             return "/* unsupported: " + expr.text + " */ " + emitArguments(expr);
         }
+
+        // A componentwise comparison is the operator itself here, so it is laid
+        // out and parenthesised as one - see operatorOf.
+        if (const auto* spelling = comparisonOperator(expr.text))
+            if (expr.args.size() == 2)
+            {
+                auto precedence = precedenceOf(spelling);
+
+                return emitOperand(expr.args[0], precedence, false) + " " + spelling
+                       + " " + emitOperand(expr.args[1], precedence, true);
+            }
+
+        // And so is not(), which GLSL spells as a call for want of an operator
+        // it can overload.
+        if (expr.text == "not" && expr.args.size() == 1)
+            return "!(" + emitExpression(expr.args[0]) + ")";
+
+        // Likewise its constructor, which would otherwise read as a call to a
+        // helper the port could not find.
+        if (shader.isStructType(expr.text))
+            return "/* unsupported: struct */ " + emitArguments(expr);
 
         if (isTextureCall(expr.text))
             return emitTextureCall(expr);
@@ -1564,25 +1789,23 @@ private:
                && shader.expr(node).value == 0.0;
     }
 
-    // texelFetch takes an ivec2 in GLSL and a Float2 in the EDSL, which has no
-    // integer vector to convert from. Nothing is lost either way: the fetch is
-    // what turns the pair into texel indices, and it truncates towards zero
-    // exactly as the ivec2 conversion did.
+    // texelFetch takes an ivec2 in GLSL and the EDSL now has one, so the
+    // coordinate crosses as what it was written as. A shader that hands it a
+    // float pair instead still works: fetch() takes one of those too, and it
+    // truncates towards zero exactly as the ivec2 conversion would have.
     std::string emitFetchCoordinates(int node)
     {
         const auto& expr = shader.expr(node);
-        auto converts = expr.kind == ExprKind::Call
-                        && (expr.text == "ivec2" || expr.text == "uvec2");
 
-        if (!converts)
-            return emitExpression(node);
+        // uvec2 is the one spelling with nowhere to land: the EDSL's unsigned
+        // type is the compute thread id.
+        if (expr.kind == ExprKind::Call && expr.text == "uvec2")
+        {
+            report(DiagnosticKind::UnsupportedType, expr.text);
+            return emitArguments(expr);
+        }
 
-        // ivec2(v) converts a pair that is already a vector; ivec2(x, y) builds
-        // one from two scalars.
-        if (expr.args.size() == 1 && componentsOf(typeOf(expr.args[0])) == 2)
-            return emitExpression(expr.args[0]);
-
-        return emitVectorConstructor(node, expr, 2);
+        return emitExpression(node);
     }
 
     // GLSL fills a matrix column by column, from either one column vector per
@@ -1671,9 +1894,58 @@ private:
         return text;
     }
 
-    std::string emitVectorConstructor(int node, const Expr& expr, int width)
+    // `ivec2(fragCoord / 16.0)` is not a constructor at all - it is the whole
+    // value crossing into the other vocabulary, which the EDSL spells as one
+    // call rather than a component at a time. Same width, other family, one
+    // argument: that is the shape a conversion has, whichever way it goes.
+    std::string emitVectorCall(int node, const Expr& expr, int width)
     {
-        auto name = "float" + std::to_string(width);
+        auto family = familyOf(typeFromGlslName(expr.text));
+
+        if (expr.args.size() == 1)
+        {
+            auto argument = typeOf(expr.args[0]);
+
+            if (widthOf(argument) == width && familyOf(argument) != family)
+            {
+                if (family == Family::Int && familyOf(argument) == Family::Float)
+                    return "toInt(" + emitExpression(expr.args[0]) + ")";
+
+                if (family == Family::Float && isInteger(argument))
+                    return "toFloat(" + emitExpression(expr.args[0]) + ")";
+            }
+
+            // And a value already of the right shape converts to itself.
+            if (argument == vectorOf(family, width))
+                return emitExpression(expr.args[0]);
+        }
+
+        return emitVectorConstructor(node, expr, width, family);
+    }
+
+    // One component of a constructor, crossed into the family being built where
+    // it is not already in it - which is what GLSL does implicitly inside a
+    // constructor and the EDSL makes explicit everywhere.
+    std::string emitComponent(int node, Family family)
+    {
+        auto text = emitExpression(node);
+
+        if (readsInFamily(node, family))
+            return text;
+
+        if (family == Family::Int)
+            return "toInt(" + text + ")";
+
+        if (family == Family::Float && isInteger(typeOf(node)))
+            return "toFloat(" + text + ")";
+
+        return text;
+    }
+
+    std::string
+        emitVectorConstructor(int node, const Expr& expr, int width, Family family)
+    {
+        auto name = constructorName(family) + std::to_string(width);
         auto parts = Vector<std::string> {};
 
         // GLSL broadcasts a lone scalar across the whole vector; the EDSL's
@@ -1681,10 +1953,9 @@ private:
         // repeated. It is emitted rather than bound to a temporary, so a
         // complex argument is recorded once per component - correct, but worth
         // knowing when reading the generated graph.
-        if (expr.args.size() == 1 && typeOf(expr.args[0]) == Type::Float
-            && width > 1)
+        if (expr.args.size() == 1 && widthOf(typeOf(expr.args[0])) == 1 && width > 1)
         {
-            auto scalar = emitExpression(expr.args[0]);
+            auto scalar = emitComponent(expr.args[0], family);
 
             for (auto index = 0; index < width; ++index)
                 parts.add(scalar);
@@ -1692,14 +1963,15 @@ private:
         else
         {
             for (auto arg: expr.args)
-                parts.add(emitExpression(arg));
+                parts.add(emitComponent(arg, family));
         }
 
         // A constructor built purely from literals has no value handle to take
         // a graph from, and the EDSL rejects it. Anchoring the first component
-        // with constant() gives it one without changing what it evaluates to.
-        if (!mentionsAName(node) && !parts.empty())
-            parts[0] = "constant(" + parts[0] + ")";
+        // gives it one without changing what it evaluates to. A boolean needs no
+        // anchor: every literal one is already read through boolean().
+        if (!mentionsAName(node) && !parts.empty() && family != Family::Bool)
+            parts[0] = anchorName(family) + std::string {"("} + parts[0] + ")";
 
         auto text = name + "(";
 

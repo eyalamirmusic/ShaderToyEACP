@@ -11,13 +11,15 @@ a matter of opinion into a measurement. Every shader that fails to convert names
 a specific gap, and the number of shaders blocked on each gap is what decides
 which one to close next.
 
-> **⚠️ Early days.** Stages 0 to 6 are done: straight-line GLSL converts,
+> **⚠️ Early days.** Stages 0 to 7 are done: straight-line GLSL converts,
 > constant-trip-count loops unroll, helper functions inline, the intrinsic and
 > swizzle gaps are closed, texture channels are sampled, the EDSL has real
 > control flow — mutable locals, `if`/`else`, `while`, `break`, `continue` and
-> `select` — and it now has a signed integer, the operators only integers have,
-> and a constant array to subscript with one. Multi-buffer Shadertoys are still
-> ahead — see the plan and the coverage table below.
+> `select` — it has a signed integer, the operators only integers have, and a
+> constant array to subscript with one, and now the vectors of both the integer
+> and the boolean, with the componentwise comparison that is the only thing a
+> boolean vector is ever made of. Multi-buffer Shadertoys are still ahead — see
+> the plan and the coverage table below.
 
 ## Why this works better than it looks like it should
 
@@ -69,8 +71,9 @@ Apps/MarchPort/           a converted port that marches a loop with a break
 Tests/Glsl/               lowering and diagnostics
 Tests/Runtime/            vertex layout, uniform block layout, generated stages,
                           corpus ports compiled from their GLSL by the build, and
-                          rendered read-back of a bound channel, of a loop, and
-                          of an array read at an index the pixel computed
+                          rendered read-back of a bound channel, of a loop, of an
+                          array read at an index the pixel computed, and of a
+                          grid counted in integers behind a componentwise test
 ```
 
 A port looks like this — hand-written or generated, the shape is the same:
@@ -162,6 +165,25 @@ auto col = palette[index] * (0.5f + 0.5f * sin(iTime));
 The array's size is its type, so a literal subscript is checked where it is
 written; a computed one is the shader's own business, as it is in GLSL, which is
 what the `& 3` is for.
+
+A port that works on a grid counts its cell as a pair of integers, and one that
+tests a point against a box compares two vectors a component at a time — which
+is the operator itself here, since that is what both shading languages give a
+pair of vectors:
+
+```cpp
+auto cell = toInt(fragCoord / 16.0f);
+auto checker = fract(toFloat(cell.x() + cell.y()) * 0.5f);
+
+auto inside = fragCoord < iResolution.xy() * 0.75f;
+auto lit = select(all(inside), 1.0f, 0.25f);
+```
+
+`inside` is a `Bool2`, and nothing branches on one: `all()` and `any()` are what
+turn a mask back into the single condition a `select` or an `ifThen` takes.
+GLSL spells the comparison `lessThan(a, b)` because it reserves the operator for
+scalars — the transpiler rewrites it into the operator, since that is what the
+languages underneath actually have.
 
 ## The plan
 
@@ -277,10 +299,24 @@ This is also the stage that took the last type deviation out of the uniform set:
 `iFrame` was a float because there was nothing else for it to be, and is an
 `int` on both sides now.
 
-**Stage 7 — multi-buffer Shadertoys.** *Next.* Buffer A–D with feedback, which
+**Stage 7 — the vectors of both.** *Done.* `Int2`/`Int3`/`Int4` with the whole
+integer operator set componentwise, `Bool2`/`Bool3`/`Bool4`, the componentwise
+comparison that is the only thing a boolean vector is ever made of, and the
+`any()`/`all()` that collapse one back into a condition — plus the constructors,
+the swizzles and the crossings to and from float arithmetic a whole vector at a
+time.
+
+The comparison is spelled as the operator rather than as GLSL's `lessThan()`,
+which is a decision rather than a shortcut — see below. So is which of the two
+families crosses from the CPU.
+
+It also gave a texel read the type it had been asking for since stage 4:
+`fetch()` takes an `Int2`, which is what a texel index is.
+
+**Stage 8 — multi-buffer Shadertoys.** *Next.* Buffer A–D with feedback, which
 needs render-to-texture and float texture formats in eacp. What the corpus is
-asking for beside it is the vector half of the row stage 6 closed the scalar
-half of — `ivec2`, and the componentwise comparison with no `bvec` to land in.
+asking for beside it is the last of the type row: the struct, which is how a
+shader that marches a scene carries back more than one thing from a hit.
 
 ## Using it
 
@@ -322,29 +358,28 @@ build/Tools/Transpile/shadertoy-transpile --report Corpus/*.glsl \
 
 ## The coverage table
 
-Over the eleven shaders in `Corpus/` plus `Apps/PlasmaPort/Plasma.glsl`, as of
-the end of stage 6. `Shaders` is the number blocked by that gap, which is what
+Over the twelve shaders in `Corpus/` plus `Apps/PlasmaPort/Plasma.glsl`, as of
+the end of stage 7. `Shaders` is the number blocked by that gap, which is what
 the roadmap is sorted by:
 
 | Blocker | Shaders | Occurrences |
 | --- | ---: | ---: |
-| type: bvec2 | 1 | 1 |
-| type: ivec2 | 1 | 1 |
-| user-function: all | 1 | 1 |
-| user-function: ivec2 | 1 | 1 |
-| user-function: lessThan | 1 | 1 |
+| type: struct | 1 | 1 |
 
-11 of 12 shaders converted with no gaps.
+12 of 13 shaders converted with no gaps.
 
-Every integer and array row is gone. `Palette.glsl` had five of them — an array
-type, a subscript, an integer value and the operator only integers have, which
-is what one gap looks like when it is genuinely four things — and now converts,
-compiles and renders with nothing left over.
+Every vector row is gone. `Lattice.glsl` had five of them — an `ivec2` cell, the
+componentwise `lessThan`, the `bvec2` it yields and the `all()` that collapses
+one, which is what one gap looks like when it is genuinely three things — and
+now converts, compiles and renders with nothing left over.
 
-The remaining row is `Lattice.glsl`, added with this stage so the table is still
-measuring something: the vector half of what stage 6 closed the scalar half of.
-An `ivec2` cell, a componentwise `lessThan`, and the `bvec2` it yields with no
-`any()`/`all()` to collapse it — three ledger entries, one shader.
+The remaining row is `Surface.glsl`, added with this stage so the table is still
+measuring something: a raymarcher whose scene function hands back how far away
+the surface was *and* what it was made of, which in GLSL is a struct and in the
+EDSL is nothing at all — every value it names is one node, so a pair of them has
+nowhere to live.
+
+That it is one row rather than six is itself this stage's doing — see below.
 
 `Kaleido.glsl` was added with stage 3 and is the shader that measures it: a
 `mat2` rotation built inline, polar coordinates through the two-argument `atan`,
@@ -367,10 +402,16 @@ compiles them — and renders three.
 since stage 1: a constant array of four colours, an index truncated out of a
 coordinate, and the mask that holds it in range.
 
+`Lattice.glsl` is stage 7's: a cell counted out of the coordinate in `ivec2`, a
+checker taken from the parity of its two components, and a box test that
+compares the coordinate against the resolution one component at a time and
+collapses what that yields with `all()`.
+
 The corpus is still far too small for these counts to rank anything. What it
 establishes is that the measurement works end to end — and it has now paid for
-itself four times over, turning three assumptions into bugs in stage 3, three
-more in stage 4, two in stage 5 and two in stage 6 before any of them shipped.
+itself five times over, turning three assumptions into bugs in stage 3, three
+more in stage 4, two in stage 5, two in stage 6 and three in stage 7 before any
+of them shipped.
 
 ## What this has already changed in eacp
 
@@ -504,6 +545,48 @@ local, because no local has been declared yet at that point. A subscript is an
 ordinary node under the emitter's sharing rule, so a table read twice at one
 index is read once and named.
 
+**The componentwise comparison is the operator, not a named call** (stage 7).
+GLSL spells it `lessThan(a, b)`, `greaterThanEqual(a, b)` and so on, and copying
+those names across is the obvious move. It is also the wrong one: GLSL only has
+them because it reserves `<` for scalars, and both languages the EDSL emits into
+give the operator itself to a pair of vectors and yield a boolean of the same
+width. The EDSL follows the languages it emits into rather than the one it is
+ported from — as it already does with `rsqrt`, `atan2` and `mix` — so `a < b` on
+two `Float2` is the mask, and the transpiler rewrites the call into the operator.
+
+That is also the one place this cost the transpiler something. `lessThan(a, b)`
+arrives as a call and leaves as a binary operator, so the parenthesising and the
+line-wrapping paths could no longer key on the node kind: both now ask what
+operator a node *emits* as, and a comparison written as a call is grouped by
+exactly the rules the `<` in a scalar one is.
+
+**One set of swizzle accessors, three families** (stage 7). The 340 orderings
+stage 3 added returned `Float`, `Float2`, `Float3` and `Float4` by name, so an
+integer vector would have needed its own copy of all of them — and the cheap way
+out is to give `Int2` only `.x()` and `.y()` and call it enough. Parameterising
+the accessors on the family instead was measured rather than guessed at: nine
+instantiations of the template compile in the same 0.26s that three did, because
+a member function of a class template is not instantiated until it is used. So
+an integer vector has the whole vocabulary and a boolean one does too, and
+`cell.yx()` is one `Swizzle` node exactly as `uv.yx()` is.
+
+**The integer vectors cross from the CPU and the boolean ones do not** (stage
+7). The same split as `Int` against `Bool`, one size up, and for the same reason
+each way: MSL and HLSL both pack an `int2` exactly where they pack a `float2`,
+so nothing in the uniform block has to reconcile them; neither agrees on what a
+`bool` occupies, and a vector of them inherits that. `ShaderBuilder::uniform<T>()`
+static_asserts the second, and `Uniform<Int2>` reads back as the packed
+`std::array<std::int32_t, 2>` it is.
+
+**A texel read finally has the type it was asking for** (stage 7). Stage 4
+recorded that `fetch()` took a `Float2` "because the EDSL has no integer
+vector", which was true and is not any more. It takes an `Int2` now — which is
+what a texel index is, and what GLSL's `texelFetch` takes — and the emitter
+drops the `int2(...)` cast it used to wrap every coordinate in when the
+coordinate already is one. The `Float2` form stays, because a shader usually has
+the coordinate in hand as one and truncating it is exactly what the `ivec2`
+conversion would have done.
+
 Stage 3 also found a bug on this side of the fence rather than in eacp: the
 emitter's line-wrapping path rebuilt a call's head from the *GLSL* name, so a
 wrapped `inversesqrt` came back as `inversesqrt` instead of `rsqrt`. It had
@@ -529,6 +612,18 @@ the capability it is and skipped whole, and top-level recovery asserts that it
 moved. Found while measuring what the corpus asks for next, which is the other
 thing the measurement is for.
 
+Stage 7 found the one that decides what the table above is worth at all. A
+struct the parser could not keep was skipped whole and its *name* thrown away
+with it — so every later use of one arrived as something else: the
+declaration `Hit hit = scene(p)` as a parse error, the constructor `Hit(d, c)`
+as a call to a helper the port could not find, and each `hit.albedo` as an
+unsupported *swizzle*. One missing capability, six rows, three of them wrong
+about what was missing. Keeping the name is the whole fix: a value of a struct
+type is then a value of a type the EDSL does not have, which is the thing that
+was actually true. `Corpus/Surface.glsl` reports one row now instead of six,
+and the discipline it restores — a diagnostic names one capability, and two
+shaders blocked by the same thing agree on it — is what the counts are for.
+
 ## The gap ledger
 
 What eacp's EDSL cannot express today, from reading the module — the standing
@@ -536,12 +631,11 @@ list the table above is gradually replacing with measured counts.
 
 | Blocker | Where it lives in eacp |
 | --- | --- |
-| No `ivec`/`bvec` and no structs — the scalar `Int` and the constant array are there, the vectors of either and the aggregate are not | `ShaderTypes.h` |
+| No structs — the scalars, their vectors and the constant array are all there, the aggregate is not: every value the EDSL names is one node, so a pair of them has nowhere to live | `ShaderTypes.h` |
 | An array is constant: its elements are evaluated once at the top of the shader body, so one can read a uniform or a varying but not a mutable local, and nothing writes to an element afterwards | `ShaderGraph.h` — `ArrayConstant` |
 | Control flow is fragment-stage (or kernel) only: the statement list is emitted into the fragment function, so a `Var` must not feed the position or a varying — as with `dfdx` and sampling, which are fragment-bound in the language too | `ShaderEmitter.cpp` |
 | No `do`/`while`-at-the-bottom and no `switch`; no early `return` from a shader body, which is one expression returned at the end | `ShaderGraph.h` — `StatementKind` |
 | A `Bool` cannot be a uniform: MSL packs one into a byte and an HLSL cbuffer into four. Send a `Float` and compare it | `UniformLayout.h` |
-| No componentwise comparison: `<` on two vectors yields a bool vector in both languages, and there is no type for one — nor `any()`/`all()` to collapse it | `ShaderValue.h` |
 | No `transpose`, `inverse` or `determinant` — a matrix can be built and multiplied, and that is where `Float2x2`/`Float3x3` stop | `ShaderValue.h` |
 | `Float2x2`/`Float3x3` cannot be uniforms: MSL and HLSL pack them to different sizes, which no padding between fields can bridge. `Float4x4` is unaffected | `UniformLayout.h` |
 | A vector built only from literals is rejected — `ComponentsFor` needs one handle to take a graph from, so `vec3(0.0)` has no direct spelling. A scalar has the same problem: `float d = 2.0` is a C++ float rather than a value, and ports anchor both with `constant()` | `ShaderValue.h` |
@@ -569,7 +663,15 @@ Closed by stage 6: the scalar half of the type row. `Int` — signed, a uniform 
 well as an expression — with `%`, `&`, `|`, `^`, `<<`, `>>`, `~`, the six
 comparisons, `min`/`max`/`abs` and the two explicit crossings to and from
 `Float`; and `Array<T, N>` with a subscript at a literal or a computed index.
-What is left of it is above: the integer and boolean *vectors*, and the struct.
+
+Closed by stage 7: the rest of it bar the aggregate, and the componentwise
+comparison row. `Int2`/`Int3`/`Int4` with the whole integer operator set
+componentwise and against a broadcast scalar, `Bool2`/`Bool3`/`Bool4`, the six
+comparisons on two vectors of either family, `any()`/`all()` and the vector
+`!`, constructors and swizzles for both, and `toInt`/`toFloat` over a whole
+vector. An integer vector is a uniform as well as an expression; a boolean one
+is not, for the reason the scalar `Bool` is not. What is left of the type row is
+above: the struct.
 
 ## Validation
 
@@ -584,13 +686,16 @@ not take is a failing build rather than a clean report. This is what found the
 missing scalar broadcast above.
 
 **Rendered pixels.** *Started in stage 4, and load-bearing since stage 5.*
-`Tests/Runtime/ChannelTests`, `ControlFlowTests` and `ArrayTests` render a port
-off-screen through `View::renderToImage` and read the frame back. They exist
-because all three stages are invisible to the other two layers: a channel that
-never reaches the draw compiles cleanly, reports nothing and renders black; a
-loop that never runs, one that ignores its break and one that runs to completion
-all compile, all report nothing, and differ only in their pixels; and an array
-read at an index that never varies is a perfectly plausible flat colour.
+`Tests/Runtime/ChannelTests`, `ControlFlowTests`, `ArrayTests` and `VectorTests`
+render a port off-screen through `View::renderToImage` and read the frame back.
+They exist because all four stages are invisible to the other two layers: a
+channel that never reaches the draw compiles cleanly, reports nothing and
+renders black; a loop that never runs, one that ignores its break and one that
+runs to completion all compile, all report nothing, and differ only in their
+pixels; an array read at an index that never varies is a perfectly plausible
+flat colour; and a grid counted without the truncation is a ramp rather than a
+lattice, while a box test collapsed with `any()` instead of `all()` lights three
+quarters of the frame instead of one.
 
 So each shader is built so its picture says which happened. Two texels — red
 then green — through a sampled channel, a fetched one and a transpiled port say
@@ -605,6 +710,13 @@ subscripted by the pixel's own quarter comes out in four bands, and the same
 palette clamped over an index that really does go negative comes out the *first*
 colour on the left if the index is signed and the last one if it is not. Nothing
 short of the frame distinguishes those two.
+
+Stage 7's are the same shape: a checkerboard, whose cells exist only because the
+coordinate truncated into them, and one lit quarter rather than three. Each
+check is written as a fraction of the frame rather than as a pixel count,
+because a view renders at the display's backing scale and the image read back is
+in points — a shader dividing `fragCoord` by a literal has more cells on a
+retina display than on a plain one, and it is the same picture either way.
 
 What is still ahead is the golden-image half of it: render at a fixed `iTime`
 and diff against a stored PNG within a tolerance, which is the layer that

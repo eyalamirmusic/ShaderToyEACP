@@ -142,6 +142,21 @@ struct Shader
     // one unreachable loop from hiding every intrinsic it calls.
     Vector<Statement> dropped;
 
+    // The struct types the shader declared. The EDSL has no aggregate, so none
+    // of them can be lowered - but knowing their names is what lets a value of
+    // one be named as the capability it needs rather than coming out as a parse
+    // error, a mystery call and a swizzle of a field.
+    Vector<std::string> structTypes;
+
+    bool isStructType(const std::string& name) const
+    {
+        for (const auto& declared: structTypes)
+            if (declared == name)
+                return true;
+
+        return false;
+    }
+
     // What mainImage's parameters were called. A port keeps the author's names
     // so the generated body reads like the shader it came from.
     std::string fragColor = "fragColor";

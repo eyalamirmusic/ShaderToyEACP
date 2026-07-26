@@ -576,6 +576,67 @@ auto tConstantArray = test("Glsl/constantArrayConverts") = []
     check(!contains(result.code, "[3]"));
 };
 
+// The integer vector: a whole coordinate crossing at once rather than a
+// component at a time, and a component of the result crossing back. Which
+// vocabulary a number is spelled in is still decided by where it sits, so the
+// mask literal beside a cell is an integer and the divisor beside a coordinate
+// is not.
+auto tIntegerVectors = test("Glsl/integerVectorsConvert") = []
+{
+    auto result = convert("    ivec2 cell = ivec2(fragCoord / 16.0);\n"
+                          "    ivec2 wrapped = cell & 7;\n"
+                          "    int sum = wrapped.x + wrapped.y;\n"
+                          "    fragColor = vec4(vec3(float(sum) * 0.05), 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "auto cell = toInt(fragCoord / 16.0f);"));
+    check(contains(result.code, "auto wrapped = cell & 7;"));
+    check(contains(result.code, "auto sum = wrapped.x() + wrapped.y();"));
+    check(contains(result.code, "toFloat(sum) * 0.05f"));
+
+    // Built from components rather than converted, which is the constructor
+    // proper - and it anchors itself, having no name in it to take a graph from.
+    auto built =
+        convert("    ivec2 fixed = ivec2(3, 4);\n"
+                "    fragColor = vec4(float(fixed.x + fixed.y), 0.0, 0.0, 1.0);");
+
+    check(built.ok());
+    check(contains(built.code, "auto fixed = int2(integer(3), 4);"));
+};
+
+// The boolean vector, which is only ever what comparing two vectors yields.
+// GLSL spells the comparison as a call because it reserves the operators for
+// scalars; both languages the EDSL emits into give the operator itself to a
+// pair of vectors, so the port writes the operator - and all() is what turns
+// what it yields back into something a select can test.
+auto tVectorComparisons = test("Glsl/vectorComparisonsConvert") = []
+{
+    auto result =
+        convert("    bvec2 inside = lessThan(fragCoord, iResolution.xy * 0.75);\n"
+                "    bvec2 far = greaterThanEqual(fragCoord, iResolution.xy);\n"
+                "    float lit = all(inside) ? 1.0 : 0.25;\n"
+                "    float edge = any(not(far)) ? 0.5 : 0.0;\n"
+                "    fragColor = vec4(lit, edge, 0.0, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code,
+                   "auto inside = fragCoord < iResolution.xy() * 0.75f;"));
+    check(contains(result.code, "auto far = fragCoord >= iResolution.xy();"));
+    check(contains(result.code, "select(all(inside), 1.0f, 0.25f)"));
+    check(contains(result.code, "any(!(far))"));
+};
+
+// What the vectors do not reach. The unsigned ones go with the unsigned scalar,
+// whose EDSL counterpart is the compute thread id and which nothing in a
+// fragment shader gets at.
+auto tVectorGaps = test("Glsl/unsignedVectorsReported") = []
+{
+    auto result = convert("    uvec2 bits = uvec2(fragCoord);\n"
+                          "    fragColor = vec4(float(bits.x), 0.0, 0.0, 1.0);");
+
+    check(reports(result, Glsl::DiagnosticKind::UnsupportedType, "uvec2"));
+};
+
 // A struct is a capability, so it is named as one. It is also the shape that
 // used to hang the parser outright: recovery skips to a semicolon and stops at
 // a closing brace without consuming it, so the brace a struct body leaves
@@ -600,6 +661,28 @@ auto tStructIsReported = test("Glsl/structIsReportedAndTerminates") = []
     // parser where the next declaration starts, not adrift in what it skipped.
     check(countOf(result, Glsl::DiagnosticKind::ParseError) == 0);
     check(contains(result.code, "auto fragColor = float4(fragCoord, 0.0f, 1.0f);"));
+
+    // And a shader that goes on to use one still names the aggregate once,
+    // rather than the parse error, mystery call and pair of false swizzles that
+    // a value of a type nothing knows about otherwise scatters over every line
+    // that touches it. What is counted is the capability, so it has to be the
+    // capability that is reported.
+    auto used = transpile("struct Hit\n"
+                          "{\n"
+                          "    float distance;\n"
+                          "    vec3 albedo;\n"
+                          "};\n"
+                          "void mainImage(out vec4 fragColor, in vec2 fragCoord)\n"
+                          "{\n"
+                          "    Hit hit = Hit(fragCoord.x, vec3(1.0, 0.0, 0.0));\n"
+                          "    fragColor = vec4(hit.albedo * hit.distance, 1.0);\n"
+                          "}\n",
+                          "TestShader");
+
+    check(countOf(used, Glsl::DiagnosticKind::UnsupportedType) == 1);
+    check(countOf(used, Glsl::DiagnosticKind::ParseError) == 0);
+    check(countOf(used, Glsl::DiagnosticKind::UserFunction) == 0);
+    check(countOf(used, Glsl::DiagnosticKind::UnsupportedSwizzle) == 0);
 };
 
 // A subscript of something the port never declared as an array is the gap it
@@ -746,8 +829,8 @@ auto tChannels = test("Glsl/channelsConvert") = []
 // The other two reads. textureLod names the level rather than taking the one
 // the derivatives imply; texelFetch addresses texels rather than the unit
 // square, which is what iChannelResolution is there to make possible - and the
-// ivec2 it is spelled with has no EDSL type, so the coordinate crosses as the
-// float2 the fetch truncates anyway.
+// ivec2 it is spelled with is the type the coordinate keeps, since the EDSL has
+// an integer vector for it to arrive in.
 auto tChannelReads = test("Glsl/levelAndFetchConvert") = []
 {
     auto result =
@@ -760,14 +843,14 @@ auto tChannelReads = test("Glsl/levelAndFetchConvert") = []
     check(result.ok());
     check(contains(result.code, "auto texel = iChannel0.resolution.xy() * uv;"));
     check(contains(result.code, "sample(iChannel0, uv, 0.0f)"));
-    check(contains(result.code, "fetch(iChannel0, texel)"));
+    check(contains(result.code, "fetch(iChannel0, toInt(texel))"));
 
     // Two scalars rather than a vector to convert, which is the other spelling
-    // of the same coordinate.
+    // of the same coordinate - and there both numbers are integer literals.
     auto pair = convert("    fragColor = texelFetch(iChannel0, ivec2(4, 9), 0);");
 
     check(pair.ok());
-    check(contains(pair.code, "fetch(iChannel0, float2(constant(4.0f), 9.0f))"));
+    check(contains(pair.code, "fetch(iChannel0, int2(integer(4), 9))"));
 };
 
 // What the channels do not reach. A texture with one level cannot be read at

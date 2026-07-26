@@ -60,6 +60,7 @@ public:
         output.fragColor = source.fragColor;
         output.fragCoord = source.fragCoord;
         output.hasMainImage = source.hasMainImage;
+        output.structTypes = source.structTypes;
 
         for (auto reserved: reservedNames)
             namesUsed[reserved] = 1;

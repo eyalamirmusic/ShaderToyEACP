@@ -8,12 +8,13 @@ namespace Shadertoy::Glsl
 {
 namespace
 {
-bool isTypeName(std::string_view text)
+bool isBuiltInTypeName(std::string_view text)
 {
     return text == "void" || text == "float" || text == "vec2" || text == "vec3"
            || text == "vec4" || text == "int" || text == "uint" || text == "bool"
            || text == "ivec2" || text == "ivec3" || text == "ivec4"
-           || text == "bvec2" || text == "bvec3" || text == "bvec4" || text == "mat2"
+           || text == "bvec2" || text == "bvec3" || text == "bvec4"
+           || text == "uvec2" || text == "uvec3" || text == "uvec4" || text == "mat2"
            || text == "mat3" || text == "mat4" || text == "sampler2D"
            || text == "samplerCube";
 }
@@ -252,7 +253,7 @@ private:
 
             // `vec3[4](a, b, c, d)` - GLSL's array constructor, and the only
             // way a shader spells what is in one.
-            if (isTypeName(token.text) && check("["))
+            if (isBuiltInTypeName(token.text) && check("["))
                 return parseArrayLiteral(token.text);
 
             if (!match("("))
@@ -413,9 +414,6 @@ private:
 
         auto type = advance().text;
 
-        if (type.rfind("ivec", 0) == 0 || type.rfind("bvec", 0) == 0)
-            report(DiagnosticKind::UnsupportedType, type);
-
         do
         {
             if (!peek().isIdentifier())
@@ -455,6 +453,12 @@ private:
     bool startsDeclaration() const
     {
         return check("const") || (isTypeName(peek().text) && peek(1).isIdentifier());
+    }
+
+    // A built-in type, or one of the structs this shader declared.
+    bool isTypeName(const std::string& text) const
+    {
+        return isBuiltInTypeName(text) || shader.isStructType(text);
     }
 
     // An assignment, an increment, or a call standing on its own. Shared with
@@ -880,7 +884,14 @@ private:
             {
                 report(DiagnosticKind::UnsupportedType, "struct");
                 advance();
-                advance();
+
+                // Its name is kept even though its body is not: a later
+                // `Hit hit = ...` is then a declaration of an unsupported type,
+                // which names the same capability once more rather than
+                // scattering a parse error and a handful of false swizzles
+                // across every line that touches one.
+                shader.structTypes.add(advance().text);
+
                 skipBalanced("{", "}");
                 skipToSemicolon();
                 continue;

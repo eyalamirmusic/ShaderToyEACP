@@ -45,7 +45,17 @@ into a wall until that stage closed it, and it is rendered back by
 reports nothing whether or not the index actually varies, so a frame is what
 says which element each pixel got.
 
-`Lattice.glsl` is the one that walks into a wall now, which is what keeps the
-coverage table from being an empty measurement. It is the vector half of the row
-stage 6 closed the scalar half of: an `ivec2` cell, a componentwise comparison,
-and the `bvec2` it yields with no `any()`/`all()` to collapse it.
+`Lattice.glsl` is stage 7's, and is the vector half of the row stage 6 closed
+the scalar half of: an `ivec2` cell counted out of the coordinate, a checker
+taken from the parity of its two components, and a box test that compares two
+vectors componentwise and collapses the `bvec2` it yields with `all()`.
+`Tests/Runtime/VectorTests` renders it back, because a grid counted without the
+truncation is a ramp rather than a lattice and a box test collapsed with `any()`
+lights three quarters of the frame instead of one — and both of those compile
+and report nothing.
+
+`Surface.glsl` is the one that walks into a wall now, which is what keeps the
+coverage table from being an empty measurement. Its scene function hands back
+how far away the surface was *and* what it was made of, which in GLSL is a
+struct: the last of the type row, and the one thing left that no single value in
+the EDSL stands for.

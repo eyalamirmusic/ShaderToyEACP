@@ -7,6 +7,7 @@ nano_add_executable(RuntimeTests
             ProgramTests.cpp
             PortTests.cpp
             TestMain.cpp
+            VectorTests.cpp
         TARGETS shadertoy-runtime)
 
 # The corpus shaders that convert cleanly, transpiled by the build and compiled
@@ -34,3 +35,7 @@ shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Mand
 # Stage 6: the constant array, the integer that indexes it and the mask that
 # holds the index in range.
 shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Palette.glsl NAME Palette)
+
+# Stage 7: the vector halves of both - a grid cell counted in ivec2, a
+# componentwise lessThan, and the all() that collapses what it yields.
+shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Lattice.glsl NAME Lattice)
