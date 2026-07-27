@@ -23,26 +23,32 @@ function(shadertoy_add_port target)
     set(directory "${CMAKE_CURRENT_BINARY_DIR}/${target}-ports")
     set(generated "${directory}/${ARG_NAME}.h")
 
+    # The same conversion's other output: both texts as data, for an app that
+    # shows the shader beside the C++ it became. One command rather than two,
+    # since the second would have to convert the shader again to write it.
+    set(listing "${directory}/${ARG_NAME}Listing.h")
+
     set(force_flag "")
     if (ARG_FORCE)
         set(force_flag "--force")
     endif ()
 
     add_custom_command(
-            OUTPUT "${generated}"
+            OUTPUT "${generated}" "${listing}"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${directory}"
             COMMAND shadertoy-transpile "${source}"
-                    -o "${generated}" --name "${ARG_NAME}" ${force_flag}
+                    -o "${generated}" --listing "${listing}"
+                    --name "${ARG_NAME}" ${force_flag}
             DEPENDS shadertoy-transpile "${source}"
             COMMENT "Transpiling ${ARG_NAME} from ${ARG_GLSL}"
             VERBATIM)
 
-    # Listed as a source so the custom command is scheduled, but never compiled
-    # on its own - it is a header the target's own sources include.
-    set_source_files_properties("${generated}" PROPERTIES
+    # Listed as sources so the custom command is scheduled, but never compiled
+    # on their own - they are headers the target's own sources include.
+    set_source_files_properties("${generated}" "${listing}" PROPERTIES
             GENERATED TRUE HEADER_FILE_ONLY TRUE)
 
-    target_sources(${target} PRIVATE "${generated}")
+    target_sources(${target} PRIVATE "${generated}" "${listing}")
     target_include_directories(${target} PRIVATE "${directory}")
 endfunction()
 

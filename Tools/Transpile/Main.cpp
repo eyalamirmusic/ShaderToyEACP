@@ -1,3 +1,4 @@
+#include <shadertoy/Emit/ListingEmitter.h>
 #include <shadertoy/Transpile.h>
 
 #include <algorithm>
@@ -16,6 +17,7 @@ struct Options
 {
     Glsl::Vector<std::string> inputs;
     std::string output;
+    std::string listing;
     std::string structName;
     bool report = false;
     bool force = false;
@@ -32,6 +34,8 @@ void printUsage()
         << "  -o      where to write the generated header (default: stdout)\n"
         << "  --name  the generated struct's name (default: from the file)\n"
         << "  --force write the header even when the shader reported gaps\n"
+        << "  --listing  also write a header holding both texts - the GLSL\n"
+        << "             read and the C++ written - for an app that shows them\n"
         << "  --report  convert every input and print a coverage table only\n";
 }
 
@@ -49,6 +53,8 @@ Options parseOptions(int argc, char* argv[])
             options.force = true;
         else if (argument == "-o" && index + 1 < argc)
             options.output = argv[++index];
+        else if (argument == "--listing" && index + 1 < argc)
+            options.listing = argv[++index];
         else if (argument == "--name" && index + 1 < argc)
             options.structName = argv[++index];
         else if (argument.rfind('-', 0) == 0)
@@ -174,7 +180,8 @@ int runConvert(const Options& options)
     auto structName =
         options.structName.empty() ? structNameFor(input) : options.structName;
 
-    auto result = transpile(readFile(input), structName);
+    auto source = readFile(input);
+    auto result = transpile(source, structName);
 
     for (const auto& diagnostic: result.diagnostics)
         std::cerr << input << ":" << describe(diagnostic) << "\n";
@@ -185,6 +192,16 @@ int runConvert(const Options& options)
                   << input << ": " << result.diagnostics.size()
                   << " gap(s); not written. Pass --force to write anyway.\n";
         return 1;
+    }
+
+    // Beside the header rather than instead of it, and written whichever way
+    // the header went out: a build asks for both in one command, so a listing
+    // missing because the header went to stdout would be a build that fails
+    // somewhere else entirely.
+    if (!options.listing.empty())
+    {
+        auto listing = std::ofstream(options.listing, std::ios::binary);
+        listing << Emit::emitListing(structName, source, result.code);
     }
 
     if (options.output.empty())

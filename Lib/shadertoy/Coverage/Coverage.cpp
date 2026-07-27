@@ -1,5 +1,7 @@
 #include "Coverage.h"
 
+#include <shadertoy/Emit/ListingEmitter.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -176,6 +178,20 @@ std::filesystem::path writeHeader(const std::filesystem::path& out,
     return header;
 }
 
+// Beside the header, the shader and the header as data, for the gallery to
+// show. Written for everything that converted rather than only for what went on
+// to compile, because whether it compiles is not known yet here - and a listing
+// nobody includes costs a file in a scan directory.
+void writeListing(const std::filesystem::path& out,
+                  const std::string& structName,
+                  const std::string& glsl,
+                  const std::string& code)
+{
+    auto stream = std::ofstream(out / (structName + "Listing.h"), std::ios::binary);
+
+    stream << Emit::emitListing(structName, glsl, code);
+}
+
 Outcome measure(const std::filesystem::path& source,
                 const std::string& structName,
                 const std::filesystem::path& out,
@@ -200,6 +216,7 @@ Outcome measure(const std::filesystem::path& source,
         return outcome;
 
     auto header = writeHeader(out, outcome.name, result.code);
+    writeListing(out, outcome.name, text, result.code);
 
     auto diagnostics = compiler(header);
     outcome.compiled = diagnostics.empty();
@@ -642,8 +659,13 @@ void writeTable(std::ostream& file,
          << "// which does not convert cannot keep that rule, so this is the\n"
          << "// half of a gallery that is a measurement and not a promise.\n\n";
 
+    // The port and its listing, which is the port's two texts: a consumer that
+    // shows a shader and a consumer that shows what it was written as are the
+    // same consumer, and pulling them apart would mean two X-macros over one
+    // list.
     for (const auto* outcome: passed)
-        file << "#include <" << outcome->name << ".h>\n";
+        file << "#include <" << outcome->name << ".h>\n"
+             << "#include <" << outcome->name << "Listing.h>\n";
 
     file << "\n#define SHADERTOY_EXTERNAL_PORT_COUNT " << passed.size() << "\n"
          << "\n// X(port, label) once per survivor, so that a consumer says\n"

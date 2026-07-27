@@ -12,6 +12,7 @@ target_sources(shadertoy-glsl PRIVATE
         Glsl/Lower.cpp
         Glsl/Returns.cpp
         Emit/CppEmitter.cpp
+        Emit/ListingEmitter.cpp
         Transpile.cpp)
 
 set_default_target_setting(shadertoy-glsl)

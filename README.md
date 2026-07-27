@@ -790,12 +790,19 @@ build/Tools/Transpile/shadertoy-transpile --report Corpus/*.glsl \
 Or look at it, which is a different question and one no report answers:
 
 ```bash
-build/Apps/Gallery/Gallery.app/Contents/MacOS/Gallery   # arrows, space
+build/Apps/Gallery/Gallery.app/Contents/MacOS/Gallery   # arrows, space, /, C
 ```
 
 Every shader in `Corpus/` is compiled into that one app — including the eight
 real Shadertoys in `Corpus/Imported/`, which are there because their authors
-licensed them permissively — and the arrow keys walk through them. The report
+licensed them permissively — and the arrow keys walk through them. The list down
+the left names them all, and typing filters it, since a hundred and seventy
+shaders reached only by pressing the right arrow is a corpus nobody looks past
+the front of. `Show Code`, or `C`, opens a second window holding the shader's
+GLSL beside the C++ the transpiler made of it — the comparison this whole
+project is about, and the one thing a table of counts cannot show. Both texts
+are embedded at build time, so a downloaded `.app` shows them with neither the
+corpus nor a build directory beside it. The report
 says a shader converted, and `RuntimeTests` says the C++ it converted to
 compiles and satisfies a handful of pixels; neither says the frame looks like
 the shader, and a march that stops one step early reports nothing, compiles, and
@@ -1868,7 +1875,8 @@ Outputs:
 - `build/Apps/MarchPort/MarchPort.app` — a transpiled port marching a loop
 - `build/Apps/TrailPort/TrailPort.app` — two transpiled ports, one a feedback buffer
 - `build/Apps/Gallery/Gallery.app` — the whole corpus, one shader at a time,
-  and a scanned one beside it when the build was pointed at one
+  browsable by name, each one readable beside the C++ it converted to, and a
+  scanned corpus beside the committed one
 - `build/Tools/Corpus/shadertoy-fetch` — the corpus fetcher, for growing it
 - `build/Tests/Glsl/GlslTests`, `build/Tests/Runtime/RuntimeTests`,
   `build/Tests/Corpus/CorpusTests`, `build/Tests/Coverage/CoverageTests`

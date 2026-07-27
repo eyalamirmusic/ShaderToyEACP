@@ -41,6 +41,12 @@ add_subdirectory(Tools)
 option(SHADERTOY_ENABLE_EXAMPLES "Enable Examples for ShaderToyEACP" ${PROJECT_IS_TOP_LEVEL})
 
 if (SHADERTOY_ENABLE_EXAMPLES)
+    # Only the apps read it, and only one of them - the Gallery, which shows a
+    # shader's GLSL beside the C++ it converted to. A build configured for the
+    # transpiler and the scan alone should not be fetching tree-sitter, so the
+    # fetch is here rather than beside eacp's.
+    find_package(ECode REQUIRED)
+
     add_subdirectory(Apps)
 endif ()
 

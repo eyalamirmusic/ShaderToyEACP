@@ -1,5 +1,20 @@
-add_executable(Gallery Main.cpp)
-target_link_libraries(Gallery PRIVATE shadertoy-runtime)
+add_executable(Gallery
+        Browser.cpp
+        CodeWindow.cpp
+        Corpus.cpp
+        Main.cpp
+        Toolbar.cpp)
+
+add_ide_sources(Gallery)
+
+# The corpus and the app around it. ECode::Editor is the code view the two
+# generated texts are read in, and ECode::Syntax the grammar behind it - listed
+# separately because the editor does not depend on it, which is the seam that
+# lets a host that wants no tree-sitter leave it out.
+target_link_libraries(Gallery PRIVATE
+        shadertoy-runtime
+        ECode::Editor
+        ECode::Syntax)
 
 # The whole corpus, converted at build time. This is the one target that takes
 # every shader rather than one, so a shader the transpiler is happy with but a
