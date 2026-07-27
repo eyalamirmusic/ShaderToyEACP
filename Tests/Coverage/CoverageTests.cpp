@@ -130,7 +130,7 @@ auto tGapsSkipTheCompiler = test("Coverage/whatDoesNotConvertIsNotCompiled") = [
           shaderBody("    fragColor = vec4(fragCoord / iResolution.xy, 0.0, 1.0);"));
 
     write(directory / "in" / "Blocked.glsl",
-          shaderBody("    if (fragCoord.x > 0.0) return;\n"
+          shaderBody("    if (fragCoord.x > 0.0) discard;\n"
                      "    fragColor = vec4(1.0);"));
 
     auto options = Coverage::Options {};
@@ -222,7 +222,7 @@ auto tRegister = test("Coverage/registrationHoldsExactlyTheSurvivors") = []
           "// Broken - somebody\n" + shaderBody("    fragColor = vec4(1.0);"));
 
     write(directory / "in" / "Blocked.glsl",
-          shaderBody("    if (fragCoord.x > 0.0) return;\n"
+          shaderBody("    if (fragCoord.x > 0.0) discard;\n"
                      "    fragColor = vec4(1.0);"));
 
     auto options = Coverage::Options {};

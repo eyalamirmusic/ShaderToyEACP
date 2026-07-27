@@ -2,6 +2,7 @@
 
 #include "Glsl/Lower.h"
 #include "Glsl/Parser.h"
+#include "Glsl/Returns.h"
 
 #include <set>
 #include <tuple>
@@ -31,6 +32,12 @@ Glsl::Vector<Glsl::Diagnostic> distinct(const Glsl::Vector<Glsl::Diagnostic>& al
 TranspileResult transpile(const std::string& source, const std::string& structName)
 {
     auto parsed = Glsl::parse(source);
+
+    // Before flattening rather than during it: what this changes is the shape
+    // of a body, and every pass after it - inlining included - wants the shape
+    // it leaves rather than the one the shader was written with.
+    Glsl::rewriteEarlyReturns(parsed.shader);
+
     auto lowered = Glsl::lower(parsed.shader);
     auto emitted = Cpp::emit(lowered.shader, structName);
 

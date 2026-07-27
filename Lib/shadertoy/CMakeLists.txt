@@ -10,6 +10,7 @@ target_sources(shadertoy-glsl PRIVATE
         Glsl/Lexer.cpp
         Glsl/Parser.cpp
         Glsl/Lower.cpp
+        Glsl/Returns.cpp
         Emit/CppEmitter.cpp
         Transpile.cpp)
 

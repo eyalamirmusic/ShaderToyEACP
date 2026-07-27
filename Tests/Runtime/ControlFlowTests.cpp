@@ -1,5 +1,6 @@
 #include "Common.h"
 
+#include <Leaving.h>
 #include <Raymarch.h>
 
 // Control flow is the second stage whose result nothing on the CPU can observe.
@@ -139,4 +140,34 @@ auto tGeneratedPortMarches = test("ControlFlow/generatedPortMarches") = []
 
     check(centre > corner + 0.25f);
     check(centre < 1.0f);
+};
+
+// A body that leaves before its last statement, in the three shapes a
+// Shadertoy writes one - and the only thing that can tell a rewrite that kept
+// the meaning from one that skipped the wrong half is the frame. Leaving.glsl
+// puts each shape in a channel of its own, so one read-back answers for all
+// three: see the shader for what each column is supposed to be.
+auto tLeavingEarly = test("ControlFlow/aBodyThatLeavesEarly") = []
+{
+    if (!GPU::Device::shared().isValid())
+        return;
+
+    auto shader = Shadertoy::Ports::Leaving {};
+    auto image = render(shader);
+
+    check(image.isValid());
+
+    // mainImage's own return: blue, and nothing the statements after it write.
+    check(image.at(1, 2).b > 0.75f);
+    check(image.at(1, 2).r < 0.25f && image.at(1, 2).g < 0.25f);
+
+    // The guard clause, on both sides of the branch it leaves from.
+    check(image.at(5, 2).r < 0.25f);
+    check(image.at(9, 2).r > 0.4f);
+    check(image.at(9, 2).b < 0.25f);
+
+    // The return out of the loop, and the fallback the loop falls through to
+    // in the column where it never fires.
+    check(image.at(9, 2).g > 0.4f && image.at(9, 2).g < 0.9f);
+    check(image.at(15, 2).g > 0.95f);
 };

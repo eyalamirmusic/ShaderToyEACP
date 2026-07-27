@@ -83,6 +83,10 @@ on a machine with no device.
   plus statement blocks and whole function bodies. It accepts a **wider**
   grammar than the emitter can lower, and recovers from what it cannot handle,
   so one shader reports every gap rather than the first.
+- `Glsl/Returns`: a body that leaves before its last statement, rewritten into
+  one that leaves at the end - a guard clause becomes the `else` it was written
+  as, a return out of a loop becomes a `break` and a flag. Runs before lowering,
+  so the inliner and the emitter only ever see the shape they already handled.
 - `Glsl/Lower`: `Glsl::Shader` -> the flattened `Glsl::Shader` the emitter
   takes. Inlines helper calls, folds constants, and renames locals into one flat
   scope; a loop stays a loop. What it cannot flatten it

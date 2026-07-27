@@ -74,3 +74,9 @@ shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Basi
 # whole-vector equality and a local named after the intrinsic beside it.
 shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Literals.glsl NAME Literals)
 shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Blanks.glsl NAME Blanks)
+
+# Stage 14: the three shapes a body leaves early in - a guard clause, a return
+# out of a loop with the fallback under it, and mainImage's own. All three are
+# rewritten into the branch, the break and the flag they always meant, and the
+# frame is the only thing that says the meaning survived.
+shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Leaving.glsl NAME Leaving)

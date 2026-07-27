@@ -16,6 +16,7 @@ set(GALLERY_SHADERS
         Gradient
         Kaleido
         Lattice
+        Leaving
         Literals
         Macros
         Mandelbrot

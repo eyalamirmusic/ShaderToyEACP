@@ -851,7 +851,12 @@ private:
         if (!needsAnchor(node))
             return layout(prefix, node, suffix);
 
-        return layout(prefix + "constant(", node, ")" + suffix);
+        // Which anchor a literal takes is the same question as which literal it
+        // is: an integer one that took constant() would be handing a float to
+        // something the shader declared as an int, and the two do not convert.
+        auto anchor = integerLiterals.count(node) != 0 ? "integer(" : "constant(";
+
+        return layout(prefix + anchor, node, ")" + suffix);
     }
 
     std::string
@@ -1625,7 +1630,7 @@ private:
             return operand;
 
         if (expr.text == "!")
-            return "!(" + operand + ")";
+            return compound ? "!(" + operand + ")" : "!" + operand;
 
         // What is left is `~`, the one unary operator no float has.
         if (expr.text == "~" && isInteger(typeOf(expr.args[0])))
@@ -2122,7 +2127,13 @@ private:
         // a graph from, and the EDSL rejects it. Anchoring the first component
         // gives it one without changing what it evaluates to. A boolean needs no
         // anchor: every literal one is already read through boolean().
-        if (!mentionsAName(node) && !parts.empty() && family != Family::Bool)
+        //
+        // Only a scalar component takes one. A component that is itself a
+        // vector is a constructor of its own and has already anchored itself -
+        // `vec4(vec3(0.0), 0.5)` wrapped again would be handing a float3 to
+        // something that takes a float.
+        if (!mentionsAName(node) && !parts.empty() && family != Family::Bool
+            && widthOf(typeOf(expr.args[0])) == 1)
             parts[0] = anchorName(family) + std::string {"("} + parts[0] + ")";
 
         auto text = name + "(";

@@ -144,6 +144,16 @@ int widthOfType(const std::string& type)
     return 0;
 }
 
+// The same family of vector, that many components wide: what a swizzle of some
+// of a value's components has the type of.
+std::string narrowed(const std::string& type, int width)
+{
+    if (widthOfType(type) < 2 || width < 2)
+        return type;
+
+    return type.substr(0, type.size() - 1) + std::to_string(width);
+}
+
 // Which component a letter names. GLSL's three sets are interchangeable and
 // mean the same four positions, so a shader writing `col.rg` and reading
 // `col.xy` is talking about the same pair.
@@ -239,6 +249,18 @@ private:
     void bind(const std::string& name, Binding binding)
     {
         scopes.back()[name] = std::move(binding);
+    }
+
+    // Where the first write to a name nothing declared puts it. The out
+    // parameter is the body's own, so a branch writing it is writing what the
+    // code after the branch reads - binding it in the block would give the next
+    // branch a second local of its own and quietly drop this one's colour.
+    void bindInBody(const std::string& name, Binding binding)
+    {
+        auto owner =
+            name == source.fragColor && scopes.size() > 1 ? 1 : scopes.size() - 1;
+
+        scopes[owner][name] = std::move(binding);
     }
 
     // --- output nodes -----------------------------------------------------
@@ -1603,6 +1625,29 @@ private:
         auto value = lowerExpression(statement.value, into);
         auto target = isFirstWrite ? -1 : root->node;
 
+        // What the target held before, which on the first write to the out
+        // parameter is a zero: GLSL leaves it undefined, and zero is a value it
+        // is free to have.
+        auto previous = [&](int index)
+        { return isFirstWrite ? number(0.0) : component(target, index); };
+
+        // A compound operator applies to the whole swizzle, which is what GLSL
+        // says it applies to: `p.xy *= m` multiplies the pair by the matrix,
+        // and componentwise it would be each half by a column instead. With one
+        // component named the two are the same thing, and leaving the operator
+        // where the shader wrote it reads better.
+        auto applied = writes.size() > 1 && !statement.op.empty();
+
+        if (applied)
+        {
+            auto read = Expr {ExprKind::Call, narrowed(type, writes.size())};
+
+            for (auto written: writes)
+                read.args.add(previous(written));
+
+            value = binary(statement.op, output.add(std::move(read)), value);
+        }
+
         // More than one component written means reading the value once per
         // component, and eacp's emitter shares by node identity rather than by
         // shape - so a value that is not already a name gets one here, exactly
@@ -1629,13 +1674,11 @@ private:
                 if (writes[position] == index)
                     at = position;
 
-            // A component the write does not name keeps what the target already
-            // had - or, on the first write to the out parameter, a zero, since
-            // what it had is what GLSL leaves undefined.
+            // A component the write does not name keeps what the target
+            // already had.
             if (at < 0)
             {
-                rebuilt.args.add(isFirstWrite ? number(0.0)
-                                              : component(target, index));
+                rebuilt.args.add(previous(index));
                 continue;
             }
 
@@ -1644,10 +1687,9 @@ private:
             // asking a float to be a vector.
             auto written = writes.size() == 1 ? value : component(value, at);
 
-            rebuilt.args.add(
-                statement.op.empty()
-                    ? written
-                    : binary(statement.op, component(target, index), written));
+            rebuilt.args.add(statement.op.empty() || applied
+                                 ? written
+                                 : binary(statement.op, previous(index), written));
         }
 
         assign(rootName,
@@ -1690,7 +1732,7 @@ private:
             into.add(std::move(assignment));
 
             updated.node = identifier(emitted);
-            bind(name, updated);
+            bindInBody(name, updated);
             return;
         }
 

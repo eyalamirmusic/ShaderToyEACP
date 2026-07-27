@@ -459,9 +459,9 @@ auto tShadowedIntrinsic = test("Glsl/localsDoNotShadowTheEdsl") = []
     check(contains(result.code, "auto mix_2 = mix(cos_2, 1.0f, 0.5f);"));
 };
 
-// A scalar written into more than one component is broadcast across them, the
-// way GLSL broadcasts it: `p.xy += t` adds the one value to both. The rebuild
-// reads a component per slot it fills, and a scalar has none to read.
+// A compound operator applies to the whole swizzle, which is what GLSL applies
+// it to - so a scalar is broadcast across the pair rather than folded into each
+// half separately, and `p.xy += t` adds the one value to both.
 auto tScalarComponentWrite = test("Glsl/aScalarComponentWriteBroadcasts") = []
 {
     auto result = convert("    vec3 p = vec3(fragCoord, 1.0);\n"
@@ -469,7 +469,24 @@ auto tScalarComponentWrite = test("Glsl/aScalarComponentWriteBroadcasts") = []
                           "    fragColor = vec4(p, 1.0);");
 
     check(result.ok());
-    check(contains(result.code, "p.x() + p_xy, p.y() + p_xy"));
+    check(
+        contains(result.code, "auto p_xy = float2(p.x(), p.y()) + 0.05f * iTime;"));
+    check(contains(result.code, "p = float3(p_xy.x(), p_xy.y(), p.z());"));
+};
+
+// The same rule is the whole of `p.xy *= mat2(...)`, the idiom a Shadertoy
+// rotates a slice of a point with: a pair times a matrix, not each half times a
+// column, which is a product of the wrong two things and a different picture.
+auto tMatrixComponentWrite = test("Glsl/aComponentWriteTimesAMatrix") = []
+{
+    auto result = convert("    vec3 p = vec3(fragCoord, 1.0);\n"
+                          "    p.xz *= mat2(0.6, 0.8, -0.8, 0.6);\n"
+                          "    fragColor = vec4(p, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "auto p_xz = float2(p.x(), p.z())"));
+    check(contains(result.code, "* float2x2("));
+    check(contains(result.code, "p = float3(p_xz.x(), p.y(), p_xz.y());"));
 };
 
 // GLSL overloads a helper on its parameter types as well as on their number,
@@ -1150,15 +1167,80 @@ auto tSubscriptGap = test("Glsl/nonArraySubscriptIsReported") = []
     check(reports(result, Glsl::DiagnosticKind::UnsupportedType, "indexing"));
 };
 
-// A return that is not the last thing a body does leaves early, which a ported
-// mainImage cannot: it is one expression returned at the end.
-auto tEarlyReturn = test("Glsl/earlyReturnIsReported") = []
+// A ported body is one expression returned after the last statement runs, so a
+// return anywhere else is rewritten into the branch it always meant: what runs
+// after a guard clause runs precisely when the guard did not fire.
+auto tEarlyReturn = test("Glsl/earlyReturnLeavesAtTheEnd") = []
 {
     auto result = convert("    if (fragCoord.x > iTime)\n"
+                          "    {\n"
+                          "        fragColor = vec4(0.0);\n"
                           "        return;\n"
+                          "    }\n"
                           "    fragColor = vec4(1.0);");
 
-    check(reports(result, Glsl::DiagnosticKind::ControlFlow, "early return"));
+    check(result.ok());
+    check(contains(result.code, "ifThen(fragCoord.x() > iTime, [&]"));
+    check(contains(result.code, "fragColor = float4(constant(0.0f), 0.0f, 0.0f,"));
+    check(contains(result.code, "fragColor = float4(constant(1.0f), 1.0f, 1.0f,"));
+    check(!contains(result.code, "returned"));
+};
+
+// The same for a value: what the body leaves with becomes a local the branches
+// write, and the one return left is the last statement.
+auto tEarlyReturnOfAValue = test("Glsl/earlyReturnOfAValueConverts") = []
+{
+    auto result =
+        convertWith("float sphere(vec2 p)\n"
+                    "{\n"
+                    "    float h = 1.0 - dot(p, p);\n"
+                    "    if (h < 0.0) return -1.0;\n"
+                    "    return sqrt(h);\n"
+                    "}\n",
+                    "    fragColor = vec4(sphere(fragCoord), 0.0, 0.0, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "auto sphereResult = var(constant(0.0f));"));
+    check(contains(result.code, "sphereResult = constant(-1.0f);"));
+    check(contains(result.code, "sphereResult = sqrt(h);"));
+    check(!contains(result.code, "sphereReturned"));
+};
+
+// Where the rest of the body is not a branch away - a loop it can leave from -
+// the flag is what says the loop was left, and it is declared only there.
+auto tEarlyReturnFromALoop = test("Glsl/earlyReturnFromALoopConverts") = []
+{
+    auto result =
+        convertWith("float march(vec2 p)\n"
+                    "{\n"
+                    "    for (int i = 0; i < 8; i++)\n"
+                    "        if (float(i) > p.x) return float(i);\n"
+                    "    return -1.0;\n"
+                    "}\n",
+                    "    fragColor = vec4(march(fragCoord), 0.0, 0.0, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "auto marchReturned = var(boolean(false));"));
+    check(contains(result.code, "marchReturned = boolean(true);"));
+    check(contains(result.code, "breakLoop();"));
+    check(contains(result.code, "ifThen(!marchReturned(), [&]"));
+};
+
+// Both branches write the out parameter, and both writes are the same one: a
+// local per branch would leave whichever ran last holding a colour nothing
+// reads. The out parameter is the body's, not the block's.
+auto tOutParameterAcrossBranches =
+    test("Glsl/outParameterIsOneNameInEveryBranch") = []
+{
+    auto result = convert("    if (fragCoord.x > iTime)\n"
+                          "        fragColor = vec4(1.0);\n"
+                          "    else\n"
+                          "        fragColor = vec4(0.0);");
+
+    check(result.ok());
+    check(contains(result.code, "auto fragColor = var(float4("));
+    check(countOccurrences(result.code, "auto fragColor") == 1);
+    check(contains(result.code, "return fragColor();"));
 };
 
 // However many times the lowering walks past a gap, it is one gap at one place
@@ -1279,7 +1361,7 @@ auto tUserFunctions = test("Glsl/userFunctionsReported") = []
 {
     auto result = transpile("float sdBox(vec2 p)\n"
                             "{\n"
-                            "    if (p.x > 0.0) return 1.0;\n"
+                            "    if (p.x > 0.0) discard;\n"
                             "    return determinant(inverse(mat2(p.y)));\n"
                             "}\n"
                             "void mainImage(out vec4 o, in vec2 p)\n"
@@ -1289,7 +1371,7 @@ auto tUserFunctions = test("Glsl/userFunctionsReported") = []
                             "TestShader");
 
     check(reports(result, Glsl::DiagnosticKind::UserFunction, "sdBox"));
-    check(reports(result, Glsl::DiagnosticKind::ControlFlow, "early return"));
+    check(reports(result, Glsl::DiagnosticKind::ControlFlow, "discard"));
     check(reports(result, Glsl::DiagnosticKind::UnsupportedIntrinsic, "inverse"));
 };
 
@@ -1368,8 +1450,8 @@ auto tDroppedChannels = test("Glsl/droppedChannelsAreNotDeclared") = []
     auto result = transpile("vec4 pick(vec2 p)\n"
                             "{\n"
                             "    if (p.x > 0.0)\n"
-                            "        return texture(iChannel1, p);\n"
-                            "    return vec4(0.0);\n"
+                            "        discard;\n"
+                            "    return texture(iChannel1, p);\n"
                             "}\n"
                             "void mainImage(out vec4 fragColor, in vec2 fragCoord)\n"
                             "{\n"
