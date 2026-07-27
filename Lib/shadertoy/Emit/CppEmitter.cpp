@@ -218,6 +218,48 @@ const char* edslMatrixName(Type type)
     }
 }
 
+// The handle type itself, which only a kept helper's signature needs: every
+// other value the port names is bound with `auto`, and the whole reason it can
+// be is that a handle is what every expression here evaluates to.
+const char* edslTypeName(Type type)
+{
+    switch (type)
+    {
+        case Type::Bool:
+            return "GPU::Bool";
+        case Type::BVec2:
+            return "GPU::Bool2";
+        case Type::BVec3:
+            return "GPU::Bool3";
+        case Type::BVec4:
+            return "GPU::Bool4";
+        case Type::Int:
+            return "GPU::Int";
+        case Type::IVec2:
+            return "GPU::Int2";
+        case Type::IVec3:
+            return "GPU::Int3";
+        case Type::IVec4:
+            return "GPU::Int4";
+        case Type::Float:
+            return "GPU::Float";
+        case Type::Vec2:
+            return "GPU::Float2";
+        case Type::Vec3:
+            return "GPU::Float3";
+        case Type::Vec4:
+            return "GPU::Float4";
+        case Type::Mat2:
+            return "GPU::Float2x2";
+        case Type::Mat3:
+            return "GPU::Float3x3";
+        case Type::Mat4:
+            return "GPU::Float4x4";
+        default:
+            return nullptr;
+    }
+}
+
 // Where a builtin's result shape comes from. GLSL's rules are per-function -
 // step() is shaped like its second argument, smoothstep() like its third - and
 // getting this wrong would emit constructors of the wrong width.
@@ -492,10 +534,18 @@ public:
 
         for (auto channel = 0; channel < channelCount; ++channel)
             types["iChannel" + std::to_string(channel)] = Type::Channel;
+
+        for (const auto& function: shader.functions)
+            helpers[function.name].add(&function);
     }
 
     EmitResult run()
     {
+        // Before the body, because a helper is where a shader puts the sampling
+        // and the arithmetic the body only arranges: the channels it reads and
+        // the gaps it hits are counted with everything else.
+        auto declarations = emitHelpers();
+
         auto body = std::string {};
 
         for (const auto& statement: shader.statements)
@@ -516,7 +566,8 @@ public:
             emitStatement(statement);
 
         auto result = EmitResult {};
-        result.code = preamble(channels) + body + epilogue();
+        result.code = preamble(channels) + declarations + mainImageSignature() + body
+                      + epilogue();
         result.diagnostics = std::move(diagnostics);
         return result;
     }
@@ -539,10 +590,13 @@ private:
                "namespace Shadertoy::Ports\n{\n"
                "struct "
                + structName + " final : Program\n{\n" + channels + "    "
-               + structName
-               + "() { compile(); }\n\n"
-                 "    GPU::Float4 mainImage(const GPU::Float2& "
-               + shader.fragCoord + ") override\n    {\n";
+               + structName + "() { compile(); }\n\n";
+    }
+
+    std::string mainImageSignature() const
+    {
+        return "    GPU::Float4 mainImage(const GPU::Float2& " + shader.fragCoord
+               + ") override\n    {\n";
     }
 
     // The channel members the port declares, in channel order. A port declares
@@ -611,6 +665,209 @@ private:
     std::string readOf(const std::string& name) const
     {
         return variables.count(name) != 0 ? name + "()" : name;
+    }
+
+    // --- helpers -----------------------------------------------------------
+
+    // The functions the shader wrote, as functions the port declares: one C++
+    // member each, over handles, ahead of the mainImage that calls them. They
+    // read like the GLSL because they are the GLSL - the same body, lowered
+    // once, with the same name and the same parameters in the same order.
+    std::string emitHelpers()
+    {
+        auto text = std::string {};
+
+        for (const auto& function: shader.functions)
+            text += emitHelper(function);
+
+        return text;
+    }
+
+    std::string emitHelper(const Function& function)
+    {
+        auto returns = std::string(edslTypeName(declaredType(function.returnType)));
+        auto parameters = Vector<std::string> {};
+
+        for (const auto& parameter: function.parameters)
+        {
+            auto type = declaredType(parameter.type);
+            types[parameter.name] = type;
+
+            parameters.add("const " + std::string(edslTypeName(type)) + "& "
+                           + parameter.name);
+        }
+
+        auto savedIndent = indent;
+        indent = "        ";
+        atBlockStart = true;
+        afterABlock = false;
+        returning = declaredType(function.returnType);
+
+        auto body = std::string {};
+
+        for (const auto& statement: shader.block(function.body).statements)
+            body += emitStatement(statement);
+
+        indent = savedIndent;
+        atBlockStart = true;
+        afterABlock = false;
+        wroteReturn = false;
+        returning = Type::Unknown;
+
+        return signatureOf(returns, function.name, parameters) + "\n    {\n" + body
+               + "    }\n\n";
+    }
+
+    // A signature broken the way a call is: onto one line where it fits, and
+    // one parameter per line under the open bracket where it does not.
+    static std::string signatureOf(const std::string& returns,
+                                   const std::string& name,
+                                   const Vector<std::string>& parameters)
+    {
+        auto head = "    " + returns + " " + name + "(";
+        auto single = head;
+
+        for (auto index = 0; index < parameters.size(); ++index)
+            single += (index > 0 ? ", " : "") + parameters[index];
+
+        if ((int) single.size() + 1 <= columnLimit)
+            return single + ")";
+
+        auto text = head;
+        auto continued = std::string(head.size(), ' ');
+
+        for (auto index = 0; index < parameters.size(); ++index)
+            text += (index > 0 ? ",\n" + continued : "") + parameters[index];
+
+        return text + ")";
+    }
+
+    // Which of a name's helpers a call means. The count settles most of them,
+    // and the argument types settle the rest - the same two questions in the
+    // same order as the GLSL asked them, and as the C++ the port becomes will
+    // ask them again.
+    //
+    // An argument that is only a literal is not one of them. Which vocabulary a
+    // number is spelled in is decided by where it lands rather than by what it
+    // is, so scoring it would have `f(i, 0, 0)` prefer the float helper over
+    // the integer one it was written for and then spell its literals to match.
+    const Function* resolveHelper(const Expr& expr)
+    {
+        auto found = helpers.find(expr.text);
+
+        if (found == helpers.end())
+            return nullptr;
+
+        const Function* best = nullptr;
+        auto bestScore = 0;
+
+        for (const auto* candidate: found->second)
+        {
+            if (candidate->parameters.size() != expr.args.size())
+                continue;
+
+            auto score = 0;
+
+            for (auto index = 0; index < expr.args.size(); ++index)
+            {
+                if (!mentionsAName(expr.args[index]))
+                    continue;
+
+                auto declared = declaredType(candidate->parameters[index].type);
+                score += declared == typeOf(expr.args[index]) ? 1 : -1;
+            }
+
+            if (best == nullptr || score > bestScore)
+            {
+                bestScore = score;
+                best = candidate;
+            }
+        }
+
+        return best;
+    }
+
+    bool isHelperCall(const Expr& expr) const
+    {
+        return expr.kind == ExprKind::Call && helpers.count(expr.text) != 0;
+    }
+
+    // Whether a name's helpers include one this call could be for at all. A
+    // shader whose definition named no parameters parses as a helper of fewer
+    // than it is called with, and a call to a member that does not exist is a
+    // port that converts and will not compile - which is the one thing the
+    // report exists to keep from happening quietly.
+    bool hasHelperOfCount(const Expr& expr) const
+    {
+        for (const auto* candidate: helpers.find(expr.text)->second)
+            if (candidate->parameters.size() == expr.args.size())
+                return true;
+
+        return false;
+    }
+
+    std::string emitHelperCall(const Expr& expr)
+    {
+        if (!hasHelperOfCount(expr))
+        {
+            report(DiagnosticKind::UserFunction, expr.text);
+            return "/* unresolved call */ " + expr.text + "(" + emitArguments(expr)
+                   + ")";
+        }
+
+        return expr.text + "(" + joined(helperArguments(expr)) + ")";
+    }
+
+    Vector<std::string> helperArguments(const Expr& expr)
+    {
+        const auto* function = resolveHelper(expr);
+        auto arguments = Vector<std::string> {};
+
+        for (auto index = 0; index < expr.args.size(); ++index)
+            arguments.add(emitHelperArgument(expr.args[index],
+                                             parameterType(function, index)));
+
+        return arguments;
+    }
+
+    Type parameterType(const Function* function, int index) const
+    {
+        return function == nullptr ? Type::Unknown
+                                   : declaredType(function->parameters[index].type);
+    }
+
+    // One argument at a call to a helper the port declares. A C++ parameter is
+    // a handle and a literal is not one, so a number standing where a handle is
+    // wanted is anchored the way a declaration's would be; and a crossing GLSL
+    // made on its own between the integer and float vocabularies is written
+    // out, since neither the EDSL nor the languages under it convert silently.
+    std::string emitHelperArgument(int node, Type wanted)
+    {
+        auto text = emitExpression(node);
+
+        if (widthOf(wanted) == 1 && !mentionsAName(node))
+            return anchorName(familyOf(wanted)) + std::string {"("} + text + ")";
+
+        auto from = familyOf(typeOf(node));
+        auto to = familyOf(wanted);
+
+        if (to == Family::Float && from == Family::Int)
+            return "toFloat(" + text + ")";
+
+        if (to == Family::Int && from == Family::Float)
+            return "toInt(" + text + ")";
+
+        return text;
+    }
+
+    static std::string joined(const Vector<std::string>& parts)
+    {
+        auto text = std::string {};
+
+        for (auto index = 0; index < parts.size(); ++index)
+            text += (index > 0 ? ", " : "") + parts[index];
+
+        return text;
     }
 
     std::string emitBlock(int block)
@@ -711,6 +968,11 @@ private:
         }
     }
 
+    // What a helper hands back. Its type is declared rather than deduced, so
+    // unlike everything else the port binds, a value built only from literals
+    // has to arrive as a handle: `return 2.0;` is a float where a GPU::Float
+    // was promised, and which anchor it takes is which vocabulary the helper
+    // said it was in.
     std::string emitReturn(const Statement& statement)
     {
         if (statement.value < 0)
@@ -720,8 +982,8 @@ private:
         }
 
         wroteReturn = true;
-        markIntegers(statement.value, false);
-        return layout(indent + "return ", statement.value, ";");
+        markIntegers(statement.value, isInteger(returning));
+        return layoutValue(indent + "return ", statement.value, ";");
     }
 
     // A constant array is one declaration and one value: the EDSL takes its
@@ -1005,6 +1267,13 @@ private:
 
     WrappableCall wrappableCall(int node, const Expr& expr)
     {
+        // A helper's arguments are text rather than nodes for the same reason a
+        // matrix column is: what they emit as is not what re-walking them would
+        // produce, since an anchor and a crossing are decided by the parameter
+        // each one lands in.
+        if (isHelperCall(expr) && hasHelperOfCount(expr))
+            return {expr.text, {}, helperArguments(expr)};
+
         auto width = vectorConstructorWidth(expr.text);
 
         if (width > 0)
@@ -1368,6 +1637,13 @@ private:
 
     Type typeOfCall(const Expr& expr)
     {
+        // A helper the port declares says what it hands back, which is the one
+        // type here that is read off the shader rather than worked out from
+        // what went into it.
+        if (isHelperCall(expr))
+            if (const auto* function = resolveHelper(expr))
+                return declaredType(function->returnType);
+
         // A channel read is an RGBA texel whichever form it took, and
         // textureSize is the one that is not a read at all.
         if (isTextureCall(expr.text))
@@ -1478,6 +1754,20 @@ private:
 
             case ExprKind::Call:
             {
+                // A helper the port declares says which vocabulary each of its
+                // parameters is in, so nothing has to be guessed from what the
+                // call happens to pass.
+                if (isHelperCall(expr))
+                {
+                    const auto* function = resolveHelper(expr);
+
+                    for (auto index = 0; index < expr.args.size(); ++index)
+                        markIntegers(expr.args[index],
+                                     isInteger(parameterType(function, index)));
+
+                    return;
+                }
+
                 // A vector constructor decides its arguments one at a time
                 // rather than all together: ivec2(fragCoord / 16.0) converts a
                 // float pair, while ivec2(cell.x, 1) has a literal in it that
@@ -1542,7 +1832,10 @@ private:
 
         const auto& expr = shader.expr(node);
 
-        if (expr.kind == ExprKind::Identifier)
+        // A helper hands back a handle whatever it was passed, so a call to one
+        // needs no anchor of its own and cannot take one: constant() is given a
+        // float, and this is already a value in the graph.
+        if (expr.kind == ExprKind::Identifier || isHelperCall(expr))
             return true;
 
         for (auto arg: expr.args)
@@ -1607,7 +1900,7 @@ private:
                 // ternary picks between them rather than skipping one - which
                 // is what select() is, and what the shading languages emit for
                 // the conditional operator too.
-                return "select(" + emitArguments(expr) + ")";
+                return emitSelect(expr);
 
             case ExprKind::Index:
                 return emitIndex(expr);
@@ -1743,6 +2036,38 @@ private:
     // one has to be grouped before it: `(a + b).xy()` reads the sum and
     // `a + b.xy()` reads b. GLSL needed the same parentheses to say the first
     // of those, and leaving them out here is the difference between the two.
+    std::string emitSelect(const Expr& expr)
+    {
+        auto chosen = selectedFamily(expr);
+
+        if (chosen != Family::Float)
+            report(DiagnosticKind::UnsupportedIntrinsic,
+                   std::string("select over ") + constructorName(chosen));
+
+        return "select(" + emitArguments(expr) + ")";
+    }
+
+    // Which vocabulary a select picks in. The EDSL's is over the float one and
+    // no other - the shape it constrains its operands with names the four float
+    // handles and stops - so an integer or a boolean choice is a gap in eacp
+    // rather than a spelling this has not found. Worth saying out loud: it
+    // compiles as a float where nothing downstream needs it to be an int, which
+    // is what kept it hidden.
+    Family selectedFamily(const Expr& expr)
+    {
+        for (auto side: {expr.args[1], expr.args[2]})
+        {
+            auto family = mentionsAName(side)                ? familyOf(typeOf(side))
+                          : integerLiterals.count(side) != 0 ? Family::Int
+                                                             : Family::Float;
+
+            if (family == Family::Int || family == Family::Bool)
+                return family;
+        }
+
+        return Family::Float;
+    }
+
     std::string emitPostfixObject(int node)
     {
         auto grouped =
@@ -1811,7 +2136,7 @@ private:
         // identity left a bool where a number was wanted.
         if (expr.text == "float" && expr.args.size() == 1)
         {
-            auto inner = emitExpression(expr.args[0]);
+            auto inner = narrowedArgument(expr.args[0]);
 
             if (familyOf(typeOf(expr.args[0])) != Family::Float)
                 return "toFloat(" + inner + ")";
@@ -1827,7 +2152,7 @@ private:
         // is the identity, the way float() is over a float.
         if (expr.text == "int" && expr.args.size() == 1)
         {
-            auto inner = emitExpression(expr.args[0]);
+            auto inner = narrowedArgument(expr.args[0]);
             return isInteger(typeOf(expr.args[0])) ? inner : "toInt(" + inner + ")";
         }
 
@@ -1865,6 +2190,9 @@ private:
         if (isTextureCall(expr.text))
             return emitTextureCall(expr);
 
+        if (isHelperCall(expr))
+            return emitHelperCall(expr);
+
         auto matrix = typeFromGlslName(expr.text);
 
         if (matrixOrder(matrix) > 0)
@@ -1893,6 +2221,19 @@ private:
                             : builtin->edsl;
 
         return std::string(spelling) + "(" + emitArguments(expr) + ")";
+    }
+
+    // What a scalar constructor is given. GLSL says a constructor takes as many
+    // components as it needs from the front of what it was handed, so
+    // `float(v)` over a vector is its first component - and emitting the vector
+    // whole is the failure this project exists to catch, since it converts,
+    // compiles wherever an `auto` catches it, and shades something else.
+    std::string narrowedArgument(int node)
+    {
+        if (widthOf(typeOf(node)) <= 1)
+            return emitExpression(node);
+
+        return emitPostfixObject(node) + ".x()";
     }
 
     // The channel reads. texture() is the whole of what most Shadertoys use;
@@ -2216,6 +2557,11 @@ private:
     const Shader& shader;
     std::string structName;
 
+    // The helpers the port declares, by name - a whole overload set under each,
+    // since resolving a call is the one thing this has to do that the count
+    // alone cannot always answer.
+    std::map<std::string, Vector<const Function*>> helpers;
+
     std::map<std::string, Type> types;
 
     // The element type of every name declared as a constant array, which is
@@ -2234,6 +2580,11 @@ private:
 
     int currentLine = 0;
     bool wroteReturn = false;
+
+    // What the body being emitted was declared to hand back, which only a
+    // helper has: mainImage returns the colour it last wrote, and a value the
+    // lowering kept aside to be measured returns nowhere at all.
+    Type returning = Type::Unknown;
 
     // Whether nothing has been emitted into the block being written yet, which
     // is what keeps a branch opening one from taking a blank line above it.

@@ -88,10 +88,11 @@ on a machine with no device.
   as, a return out of a loop becomes a `break` and a flag. Runs before lowering,
   so the inliner and the emitter only ever see the shape they already handled.
 - `Glsl/Lower`: `Glsl::Shader` -> the flattened `Glsl::Shader` the emitter
-  takes. Inlines helper calls, folds constants, and renames locals into one flat
-  scope; a loop stays a loop. What it cannot flatten it
-  reports and moves to `Shader::dropped`, which the emitter walks for
-  diagnostics and does not emit.
+  takes. Keeps a helper the port can declare as a function of its own, lowered
+  once, and inlines the rest; folds constants, and renames the locals of one
+  body into one flat scope; a loop stays a loop. What it can neither keep nor
+  flatten it reports and moves to `Shader::dropped`, which the emitter walks
+  for diagnostics and does not emit.
 - `Emit/CppEmitter`: `Glsl::Shader` -> a C++ header declaring one
   `Shadertoy::Ports::<Name> : Program`. Minimal parentheses, wrapped to 85
   columns.

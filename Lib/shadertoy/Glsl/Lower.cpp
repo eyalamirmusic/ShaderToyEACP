@@ -79,43 +79,85 @@ std::string flattened(std::string path)
 // emitter spells a body with, and the C++ words a name cannot be at all. The
 // middle one is what the emitter can emit rather than what eacp has, which is
 // why it is a list here rather than a question asked of the module.
+// The list runs to what a *helper* may not be called as well, since a helper
+// the port keeps is a member of the same struct: one named compile() would
+// hide the one the constructor calls.
 constexpr const char* reservedNames[] = {
-    "iResolution", "iTime",        "iTimeDelta",  "iFrame",    "iMouse",
-    "iChannel0",   "iChannel1",    "iChannel2",   "iChannel3",
+    "iResolution", "iTime",        "iTimeDelta",  "iFrame",         "iMouse",
+    "iChannel0",   "iChannel1",    "iChannel2",   "iChannel3",      "compile",
+    "source",      "mainImage",    "define",      "reflectMembers",
 
-    "sin",         "cos",          "tan",         "asin",      "acos",
-    "atan",        "atan2",        "exp",         "exp2",      "log",
-    "log2",        "pow",          "sqrt",        "rsqrt",     "abs",
-    "floor",       "ceil",         "round",       "trunc",     "fract",
-    "sign",        "min",          "max",         "clamp",     "mix",
-    "smoothstep",  "step",         "length",      "distance",  "dot",
-    "cross",       "normalize",    "reflect",     "refract",   "faceforward",
-    "mod",         "dfdx",         "dfdy",        "fwidth",    "all",
-    "any",         "transpose",    "determinant", "sample",    "fetch",
-    "select",      "toInt",        "toFloat",     "constant",  "integer",
-    "boolean",     "var",          "array",       "ifThen",    "loop",
+    "sin",         "cos",          "tan",         "asin",           "acos",
+    "atan",        "atan2",        "exp",         "exp2",           "log",
+    "log2",        "pow",          "sqrt",        "rsqrt",          "abs",
+    "floor",       "ceil",         "round",       "trunc",          "fract",
+    "sign",        "min",          "max",         "clamp",          "mix",
+    "smoothstep",  "step",         "length",      "distance",       "dot",
+    "cross",       "normalize",    "reflect",     "refract",        "faceforward",
+    "mod",         "dfdx",         "dfdy",        "fwidth",         "all",
+    "any",         "transpose",    "determinant", "sample",         "fetch",
+    "select",      "toInt",        "toFloat",     "constant",       "integer",
+    "boolean",     "var",          "array",       "ifThen",         "loop",
     "breakLoop",   "continueLoop",
 
-    "float2",      "float3",       "float4",      "int2",      "int3",
-    "int4",        "bool2",        "bool3",       "bool4",     "float2x2",
+    "float2",      "float3",       "float4",      "int2",           "int3",
+    "int4",        "bool2",        "bool3",       "bool4",          "float2x2",
     "float3x3",    "float4x4",
 
-    "auto",        "bool",         "break",       "case",      "catch",
-    "char",        "class",        "const",       "continue",  "default",
-    "delete",      "do",           "double",      "else",      "enum",
-    "explicit",    "extern",       "false",       "float",     "for",
-    "friend",      "goto",         "if",          "inline",    "int",
-    "long",        "namespace",    "new",         "operator",  "private",
-    "protected",   "public",       "register",    "return",    "short",
-    "signed",      "sizeof",       "static",      "struct",    "switch",
-    "template",    "this",         "throw",       "true",      "try",
-    "typedef",     "typename",     "union",       "unsigned",  "using",
+    "auto",        "bool",         "break",       "case",           "catch",
+    "char",        "class",        "const",       "continue",       "default",
+    "delete",      "do",           "double",      "else",           "enum",
+    "explicit",    "extern",       "false",       "float",          "for",
+    "friend",      "goto",         "if",          "inline",         "int",
+    "long",        "namespace",    "new",         "operator",       "private",
+    "protected",   "public",       "register",    "return",         "short",
+    "signed",      "sizeof",       "static",      "struct",         "switch",
+    "template",    "this",         "throw",       "true",           "try",
+    "typedef",     "typename",     "union",       "unsigned",       "using",
     "virtual",     "void",         "volatile",    "while",
 };
 
 bool isIntegerType(const std::string& type)
 {
     return type == "int" || type == "uint";
+}
+
+// Whether the EDSL has a handle of that type, and so whether a kept helper can
+// take one or hand one back. `void` and a struct are the two a Shadertoy writes
+// that it does not - the first has no value at all and the second is the
+// leaves it scalarises into, which a signature cannot name - and a sampler is
+// the third, since a channel is a member of the port rather than a value
+// passed around.
+bool isEdslType(const std::string& type)
+{
+    for (auto named: {"bool",
+                      "int",
+                      "float",
+                      "vec2",
+                      "vec3",
+                      "vec4",
+                      "ivec2",
+                      "ivec3",
+                      "ivec4",
+                      "bvec2",
+                      "bvec3",
+                      "bvec4",
+                      "mat2",
+                      "mat3",
+                      "mat4"})
+        if (type == named)
+            return true;
+
+    return false;
+}
+
+bool isReservedName(const std::string& name)
+{
+    for (auto reserved: reservedNames)
+        if (name == reserved)
+            return true;
+
+    return false;
 }
 
 // How many components a declared type has, and so how many a write to some of
@@ -190,8 +232,18 @@ public:
 
         namesUsed[source.fragCoord] = 1;
 
+        // A helper the port keeps is a member function, so no local may be
+        // given its name - and that has to hold for the ones it does not keep
+        // as well, since which is which is not settled until the globals are
+        // down and the globals are lowered with names of their own.
+        for (const auto& function: source.functions)
+            namesUsed[function.name] = 1;
+
         scopes.add(Scope {});
         lowerInto(source.globals, output.statements);
+
+        chooseKeptFunctions();
+        lowerKeptFunctions();
 
         scopes.add(Scope {});
         lowerInto(source.statements, output.statements);
@@ -801,6 +853,13 @@ private:
     int lowerCall(int node, Vector<Statement>& into)
     {
         const auto& expr = source.expr(node);
+
+        // A helper the port declares is called rather than unwound, and its
+        // overload set is resolved by whichever C++ compiles the port: the call
+        // survives lowering exactly as the shader wrote it.
+        if (keptNames.count(expr.text) != 0)
+            return loweredCall(expr, into);
+
         // A name that resolves to several helpers of the same arity is not one
         // this can inline: which body the call means is decided by argument
         // types nothing here infers. It stays a call, and the emitter reports
@@ -811,17 +870,22 @@ private:
         if (function != nullptr && canInline(*function, expr))
             return expandCall(*function, expr, into, true).node;
 
-        auto call = Expr {ExprKind::Call, expr.text};
-
-        for (auto arg: expr.args)
-            call.args.add(lowerExpression(arg, into));
-
-        auto lowered = output.add(std::move(call));
+        auto lowered = loweredCall(expr, into);
 
         if (function != nullptr)
             measureBody(*function, expr);
 
         return lowered;
+    }
+
+    int loweredCall(const Expr& expr, Vector<Statement>& into)
+    {
+        auto call = Expr {ExprKind::Call, expr.text};
+
+        for (auto arg: expr.args)
+            call.args.add(lowerExpression(arg, into));
+
+        return output.add(std::move(call));
     }
 
     // A helper that will not inline is still a helper, and everything its body
@@ -840,6 +904,260 @@ private:
             return;
 
         expandCall(function, call, output.dropped, false);
+    }
+
+    // --- kept helpers -----------------------------------------------------
+
+    // Which helpers the port declares as functions of its own. A C++ function
+    // over handles records its body inline wherever it is called, so this costs
+    // the emitted shader nothing either way - what it buys is the overload set,
+    // which C++ resolves from the argument types the way GLSL did and nothing
+    // here has to infer, and a generated file the size of the shader rather
+    // than the size of the shader times how often it calls itself.
+    //
+    // The unit is the name and not the function. C++ resolves a call against
+    // every overload of a name at once, so keeping some of a set and inlining
+    // the rest would offer it a choice the shader never had; one helper that
+    // cannot be kept takes the rest of its name with it.
+    void chooseKeptFunctions()
+    {
+        auto globals = globalLocalNames();
+        auto reaches = std::map<std::string, std::set<std::string>> {};
+        auto readsAGlobal = std::set<std::string> {};
+        auto shaped = std::set<std::string> {};
+        auto unshaped = std::set<std::string> {};
+
+        for (const auto& function: source.functions)
+        {
+            auto identifiers = std::set<std::string> {};
+            auto& called = reaches[function.name];
+
+            collectBlockReferences(function.body, identifiers, called);
+
+            for (const auto& name: identifiers)
+                if (globals.count(name) != 0)
+                    readsAGlobal.insert(function.name);
+
+            (hasKeepableShape(function) ? shaped : unshaped).insert(function.name);
+        }
+
+        closeOverCalls(reaches);
+
+        for (const auto& [name, reachable]: reaches)
+        {
+            if (unshaped.count(name) != 0 || shaped.count(name) == 0)
+                continue;
+
+            // A helper reaching itself is one GLSL forbids and a port would
+            // record for ever, and one reaching a global mainImage declares has
+            // to be inlined where that global is in scope - through whatever it
+            // calls as much as directly, since what it calls is inlined into it.
+            if (reachable.count(name) != 0 || readsAGlobal.count(name) != 0)
+                continue;
+
+            auto tainted = false;
+
+            for (const auto& callee: reachable)
+                tainted = tainted || readsAGlobal.count(callee) != 0;
+
+            if (!tainted)
+                keptNames.insert(name);
+        }
+    }
+
+    // The globals that became locals of mainImage, which is every one that did
+    // not fold to a number: those are out of reach from a member function, and
+    // a helper that reads one is a helper the port has to inline.
+    std::set<std::string> globalLocalNames() const
+    {
+        auto names = std::set<std::string> {};
+
+        for (const auto& [name, binding]: scopes[0])
+            if (!binding.isConstant)
+                names.insert(name);
+
+        return names;
+    }
+
+    static void closeOverCalls(std::map<std::string, std::set<std::string>>& reaches)
+    {
+        for (auto changed = true; changed;)
+        {
+            changed = false;
+
+            for (auto& [name, reachable]: reaches)
+            {
+                auto grown = reachable;
+
+                for (const auto& callee: reachable)
+                    if (auto found = reaches.find(callee); found != reaches.end())
+                        grown.insert(found->second.begin(), found->second.end());
+
+                if (grown.size() == reachable.size())
+                    continue;
+
+                reachable = std::move(grown);
+                changed = true;
+            }
+        }
+    }
+
+    // Whether a helper is one the port can declare: a signature the EDSL has
+    // types for, and a body that is statements followed by the value at the end
+    // of them. An out parameter is not one of those - a C++ reference cannot be
+    // rebound and the caller would see nothing - so it stays a helper the
+    // inliner substitutes, which is what it was already good at.
+    bool hasKeepableShape(const Function& function) const
+    {
+        if (function.body < 0 || isReservedName(function.name)
+            || !isEdslType(function.returnType))
+            return false;
+
+        for (const auto& parameter: function.parameters)
+            if (parameter.writesBack || !isEdslType(parameter.type))
+                return false;
+
+        const auto& statements = source.block(function.body).statements;
+
+        if (statements.empty() || statements.back().kind != StatementKind::Return
+            || statements.back().value < 0)
+            return false;
+
+        for (auto index = 0; index + 1 < statements.size(); ++index)
+            if (blocksInlining(statements[index]))
+                return false;
+
+        return true;
+    }
+
+    // Every name a body reads or writes, and every helper it calls. Conservative
+    // on both counts: a local shadowing a global is counted as the global, which
+    // costs the shader an inlining it would have been fine without and never the
+    // other way round.
+    void collectBlockReferences(int block,
+                                std::set<std::string>& identifiers,
+                                std::set<std::string>& called) const
+    {
+        if (block < 0)
+            return;
+
+        for (const auto& statement: source.block(block).statements)
+        {
+            if (!statement.name.empty())
+                identifiers.insert(
+                    statement.name.substr(0, statement.name.find('.')));
+
+            collectReferences(statement.value, identifiers, called);
+            collectReferences(statement.condition, identifiers, called);
+
+            for (auto nested: {statement.init,
+                               statement.step,
+                               statement.body,
+                               statement.elseBody})
+                collectBlockReferences(nested, identifiers, called);
+        }
+    }
+
+    void collectReferences(int node,
+                           std::set<std::string>& identifiers,
+                           std::set<std::string>& called) const
+    {
+        if (node < 0)
+            return;
+
+        const auto& expr = source.expr(node);
+
+        if (expr.kind == ExprKind::Identifier)
+            identifiers.insert(expr.text);
+
+        if (expr.kind == ExprKind::Call && source.function(expr.text) != nullptr)
+            called.insert(expr.text);
+
+        for (auto argument: expr.args)
+            collectReferences(argument, identifiers, called);
+    }
+
+    void lowerKeptFunctions()
+    {
+        if (keptNames.empty())
+            return;
+
+        auto globals = foldedGlobals();
+
+        for (const auto& function: source.functions)
+            if (keptNames.count(function.name) != 0)
+                lowerKeptFunction(function, globals);
+    }
+
+    // The scope a kept helper's body sees. Every global that stands for a number
+    // is substituted rather than named: the one mainImage declares is a local of
+    // mainImage, so a helper reading PI has to read what PI was worth rather
+    // than where it was put.
+    Scope foldedGlobals()
+    {
+        auto folded = scopes[0];
+
+        for (auto& [name, binding]: folded)
+            if (binding.isConstant)
+                binding.node = number(binding.value);
+
+        return folded;
+    }
+
+    void lowerKeptFunction(const Function& function, const Scope& globals)
+    {
+        auto callerScopes = std::move(scopes);
+        scopes = Vector<Scope> {};
+        scopes.add(globals);
+        scopes.add(Scope {});
+
+        line = function.line;
+
+        auto lowered = Function {function.name, function.returnType};
+        auto body = Block {};
+
+        for (const auto& parameter: function.parameters)
+            lowered.parameters.add(
+                bindKeptParameter(function, parameter, body.statements));
+
+        for (const auto& statement: source.block(function.body).statements)
+            lowerStatement(statement, body.statements);
+
+        lowered.line = function.line;
+        lowered.body = output.add(std::move(body));
+        output.functions.add(std::move(lowered));
+
+        scopes = std::move(callerScopes);
+    }
+
+    // One parameter of a kept helper. GLSL passes by value and lets the body
+    // write to what it was given; a C++ handle taken by reference is the value
+    // and not a place, so a body that writes its parameter gets a local of its
+    // own to write instead - the same substitution the inliner makes, one level
+    // up.
+    Parameter bindKeptParameter(const Function& function,
+                                const Parameter& parameter,
+                                Vector<Statement>& into)
+    {
+        auto emitted = Parameter {parameter.type, unique(parameter.name), false};
+        auto binding = Binding {};
+        binding.node = identifier(emitted.name);
+        binding.type = parameter.type;
+
+        if (assignsTo(function.body, parameter.name))
+        {
+            auto local = unique(parameter.name);
+            auto declaration =
+                Statement {StatementKind::Declare, local, parameter.type};
+            declaration.value = binding.node;
+            declaration.line = function.line;
+            into.add(std::move(declaration));
+
+            binding.node = identifier(local);
+        }
+
+        scopes.back()[parameter.name] = binding;
+        return emitted;
     }
 
     // --- inlining ---------------------------------------------------------
@@ -1827,8 +2145,11 @@ private:
         auto lowered = lowerExpression(statement.value, into);
 
         // Nothing consumed the result, so a call that survived inlining would
-        // vanish without the emitter ever seeing it. Name it here instead.
-        if (lowered >= 0 && output.expr(lowered).kind == ExprKind::Call)
+        // vanish without the emitter ever seeing it. Name it here instead -
+        // unless it is a helper the port declares, whose result is the whole of
+        // what it does, so discarding it discards nothing.
+        if (lowered >= 0 && output.expr(lowered).kind == ExprKind::Call
+            && keptNames.count(output.expr(lowered).text) == 0)
             report(DiagnosticKind::UserFunction, output.expr(lowered).text);
     }
 
@@ -1998,6 +2319,13 @@ private:
         auto names = std::set<std::string> {};
         findVariables(output.statements, names);
 
+        // A kept helper is a scope of its own with the same rule in it, and its
+        // body is a block like any other - so the marking below reaches it
+        // already and only the finding has to be told where to look.
+        for (const auto& function: output.functions)
+            if (function.body >= 0)
+                findVariables(output.block(function.body).statements, names);
+
         if (names.empty())
             return;
 
@@ -2105,6 +2433,10 @@ private:
     Vector<std::string> inlining;
     std::set<std::string> measured;
     std::map<std::string, int> namesUsed;
+
+    // The helpers the port declares rather than inlines, by name: a whole
+    // overload set at a time, since C++ resolves a call against all of it.
+    std::set<std::string> keptNames;
 
     // The step block of each loop the port kept, innermost last: what a
     // `continue` inside it has to run before jumping. -1 for a `while`, which

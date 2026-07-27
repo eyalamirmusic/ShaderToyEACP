@@ -490,27 +490,48 @@ auto tMatrixComponentWrite = test("Glsl/aComponentWriteTimesAMatrix") = []
 };
 
 // GLSL overloads a helper on its parameter types as well as on their number,
-// and nothing here infers the type of an argument - so a name that resolves to
-// several helpers of one arity is not one the port can inline. Reporting it is
-// what stops a body shaped for other arguments being inlined instead, which
-// converts, compiles and draws something else.
-auto tOverloadedHelper = test("Glsl/anOverloadedHelperIsNotInlined") = []
+// and nothing here infers the type of an argument. It does not have to: the
+// port declares the whole overload set and calls it by name, and which body a
+// call means is then decided by whichever C++ compiles the port - by the same
+// argument types, and by the same rule the GLSL was written under.
+auto tOverloadedHelper = test("Glsl/anOverloadedHelperIsResolvedByCpp") = []
 {
     auto result =
         convertWith("float sat(float a) { return clamp(a, 0.0, 1.0); }\n"
                     "vec3 sat(vec3 a) { return clamp(a, 0.0, 1.0); }\n",
                     "    fragColor = vec4(sat(vec3(fragCoord, 0.0)), 1.0);");
 
-    check(!result.ok());
-    check(reports(result, Glsl::DiagnosticKind::UserFunction, "sat"));
+    check(result.ok());
+    check(contains(result.code, "GPU::Float sat(const GPU::Float& a)"));
+    check(contains(result.code, "GPU::Float3 sat(const GPU::Float3& a_2)"));
+    check(contains(result.code, "sat(float3(fragCoord, 0.0f))"));
 
-    // One of each arity still resolves: the count is what this can tell apart.
     auto counted =
         convertWith("float f(float a) { return a * 2.0; }\n"
                     "float f(float a, float b) { return a + b; }\n",
                     "    fragColor = vec4(f(iTime), f(iTime, 1.0), 0.0, 1.0);");
 
     check(counted.ok());
+};
+
+// And the argument types decide more here than which body runs. A literal is
+// spelled in whichever vocabulary it lands in, so the overload the *named*
+// arguments pick is what says whether `5` is a 5 or a 5.0f - and taking the
+// first candidate instead would spell it to match a helper the call was never
+// for.
+auto tOverloadPicksTheLiteralVocabulary =
+    test("Glsl/anOverloadDecidesItsLiterals") = []
+{
+    auto result =
+        convertWith("bool inRange(float v, float lo, float hi) "
+                    "{ return v > lo && v < hi; }\n"
+                    "bool inRange(int v, int lo, int hi) "
+                    "{ return v > lo && v < hi; }\n",
+                    "    int d = iFrame;\n"
+                    "    fragColor = vec4(inRange(d, 3, 9) ? 1.0 : 0.0, 0, 0, 1);");
+
+    check(result.ok());
+    check(contains(result.code, "inRange(d, integer(3), integer(9))"));
 };
 
 // A loop whose bound is a constant is a loop like any other: the counter is an
@@ -701,6 +722,42 @@ auto tComparisons = test("Glsl/comparisonsConvert") = []
     check(result.ok());
     check(contains(result.code, "select(a > 1.0f && a < 8.0f, 1.0f, 0.0f)"));
     check(contains(result.code, "select(!(a == 2.0f) || a != 3.0f, b, a)"));
+};
+
+// The branchless pick is over the float vocabulary and no other: what the
+// EDSL's select constrains its two sides with names the four float handles and
+// stops there. An integer choice had been converting and compiling as a float,
+// which is a shader drawing what it was asked to for the wrong reason - and
+// stops being one the moment something downstream needs the int.
+auto tIntegerSelectReported = test("Glsl/integerSelectIsReported") = []
+{
+    auto result = convert("    int id = fragCoord.x > 10.0 ? 1 : 0;\n"
+                          "    fragColor = vec4(float(id), 0.0, 0.0, 1.0);");
+
+    check(!result.ok());
+    check(reports(
+        result, Glsl::DiagnosticKind::UnsupportedIntrinsic, "select over int"));
+
+    // The float one is what it always was.
+    auto floats = convert("    float w = fragCoord.x > 10.0 ? 1.0 : 0.0;\n"
+                          "    fragColor = vec4(w, 0.0, 0.0, 1.0);");
+
+    check(floats.ok());
+};
+
+// A scalar constructor takes as many components as it needs off the front of
+// what it was handed, which for a vector is the first one. Handing the vector
+// on whole is the failure worth naming: it converts, it compiles wherever an
+// `auto` catches it, and it shades something else.
+auto tScalarConstructorNarrows = test("Glsl/scalarConstructorTakesTheFirst") = []
+{
+    auto result = convert("    ivec2 cell = ivec2(fragCoord);\n"
+                          "    vec2 uv = fragCoord / iResolution.xy;\n"
+                          "    fragColor = vec4(float(cell), float(uv), 0.0, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "toFloat(cell.x())"));
+    check(contains(result.code, "uv.x()"));
 };
 
 // The names a loop or a branch writes from outside its own scope are the ones
@@ -1299,10 +1356,11 @@ auto tMatrixTranspose = test("Glsl/transposeAndDeterminant") = []
     check(longest <= 85);
 };
 
-// A helper whose body is one expression is replaced by that expression. An
-// argument that is a name or a literal is substituted; anything the body would
-// otherwise evaluate twice is bound to a local of its own first.
-auto tInlinesHelpers = test("Glsl/inlinesHelpers") = []
+// A helper the shader wrote is a function the port declares: the same name, the
+// same parameters, the same body, once - and a call to it stays a call. A
+// literal argument is anchored on the way in, since a C++ parameter is a handle
+// and a number is not one.
+auto tKeepsHelpers = test("Glsl/keepsHelpersAsFunctions") = []
 {
     auto result =
         transpile("float sdBox(vec2 p, float r) { return length(p) - r; }\n"
@@ -1315,13 +1373,34 @@ auto tInlinesHelpers = test("Glsl/inlinesHelpers") = []
                   "TestShader");
 
     check(result.ok());
-    check(contains(result.code, "auto d = length(c) - 0.5f;"));
-    check(contains(result.code, "auto p = c * 2.0f;"));
-    check(contains(result.code, "auto e = length(p) - 0.5f;"));
+    check(contains(result.code,
+                   "GPU::Float sdBox(const GPU::Float2& p, const GPU::Float& r)"));
+    check(contains(result.code, "return length(p) - r;"));
+    check(contains(result.code, "auto d = sdBox(c, constant(0.5f));"));
+    check(contains(result.code, "auto e = sdBox(c * 2.0f, constant(0.5f));"));
+
+    // Once, however often it is called - which is the whole difference from
+    // inlining, and the only one visible in the file.
+    check(countOccurrences(result.code, "length(p) - r") == 1);
 };
 
-// Helpers calling helpers unwind all the way down.
-auto tInlinesNestedHelpers = test("Glsl/inlinesNestedHelpers") = []
+// A helper that hands back a number and nothing else still hands back a handle,
+// because its return type says so: `return 2.0;` is a float where a GPU::Float
+// was promised, and the anchor is what makes the two the same thing.
+auto tKeptHelperAnchorsItsReturn = test("Glsl/keptHelperAnchorsItsReturn") = []
+{
+    auto result =
+        convertWith("float half() { return 0.5; }\n"
+                    "int two() { return 2; }\n",
+                    "    fragColor = vec4(half(), float(two()), 0.0, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "return constant(0.5f);"));
+    check(contains(result.code, "return integer(2);"));
+};
+
+// Helpers calling helpers stay two functions, one calling the other.
+auto tKeepsNestedHelpers = test("Glsl/keepsNestedHelpers") = []
 {
     auto result = transpile("float inner(float x) { return x * x; }\n"
                             "float outer(float x) { return inner(x) + 1.0; }\n"
@@ -1332,8 +1411,94 @@ auto tInlinesNestedHelpers = test("Glsl/inlinesNestedHelpers") = []
                             "TestShader");
 
     check(result.ok());
-    check(contains(result.code, "auto x = c.x();"));
-    check(contains(result.code, "float4(x * x + 1.0f, 0.0f, 0.0f, 1.0f)"));
+    check(contains(result.code, "return inner(x_2) + 1.0f;"));
+    check(contains(result.code, "float4(outer(c.x()), 0.0f, 0.0f, 1.0f)"));
+};
+
+// What the port cannot declare it still inlines, which is what it always did.
+// An out parameter is the clearest of them: a C++ reference to a handle is the
+// value and not the place, so the caller would see nothing written back.
+auto tInlinesWhatItCannotKeep = test("Glsl/inlinesWhatItCannotDeclare") = []
+{
+    auto out = transpile("void twice(inout vec2 p) { p = p * 2.0; }\n"
+                         "void mainImage(out vec4 o, in vec2 c)\n"
+                         "{\n"
+                         "    vec2 uv = c;\n"
+                         "    twice(uv);\n"
+                         "    o = vec4(uv, 0.0, 1.0);\n"
+                         "}\n",
+                         "TestShader");
+
+    check(out.ok());
+    check(!contains(out.code, "twice("));
+    check(contains(out.code, "uv = p;"));
+
+    // And a helper reading a global the port declares as a local of mainImage,
+    // which a member function has no way to reach. A global that folded to a
+    // number is not one of those: it is substituted, so the helper stays.
+    auto global = convertWith("vec3 sun = vec3(0.0, 1.0, 0.0);\n"
+                              "const float k = 2.0;\n"
+                              "float lit(vec3 p) { return dot(p, sun); }\n"
+                              "float scaled(float t) { return t * k; }\n",
+                              "    fragColor = vec4(lit(vec3(fragCoord, 1.0)),\n"
+                              "                     scaled(iTime), 0.0, 1.0);");
+
+    check(global.ok());
+    check(!contains(global.code, "lit("));
+    check(contains(global.code, "GPU::Float scaled(const GPU::Float& t)"));
+    check(contains(global.code, "return t * 2.0f;"));
+};
+
+// A parameter GLSL let the body write is a value the port has to copy, since a
+// C++ reference cannot be rebound and the caller must not see it either way.
+auto tKeptHelperCopiesAWrittenParameter =
+    test("Glsl/keptHelperCopiesAWrittenParameter") = []
+{
+    auto result = convertWith("float twice(float x) { x = x * 2.0; return x; }\n",
+                              "    fragColor = vec4(twice(iTime), 0.0, 0.0, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "GPU::Float twice(const GPU::Float& x)"));
+    check(contains(result.code, "auto x_2 = x;"));
+    check(contains(result.code, "x_2 = x_2 * 2.0f;"));
+};
+
+// A helper keeps its own loops and its own variables: the body is a scope like
+// mainImage's, so a name a loop writes is a var there for the same reason.
+auto tKeptHelperKeepsItsLoop = test("Glsl/keptHelperKeepsItsLoop") = []
+{
+    auto result =
+        convertWith("float march(float x)\n"
+                    "{\n"
+                    "    float s = 0.0;\n"
+                    "    for (int i = 0; i < 4; i++) s += sin(x * float(i));\n"
+                    "    return s;\n"
+                    "}\n",
+                    "    fragColor = vec4(march(fragCoord.x), 0.0, 0.0, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code, "auto s = var(0.0f);"));
+    check(contains(result.code, "loop(i() < 4, [&]"));
+    check(contains(result.code, "return s();"));
+    check(contains(result.code, "march(fragCoord.x())"));
+};
+
+// A crossing GLSL makes on its own at a call is one the port has to write out,
+// and it knows to because the parameter says which vocabulary it is in.
+auto tKeptHelperCrossesAtTheCall = test("Glsl/keptHelperCrossesAtTheCall") = []
+{
+    auto result =
+        convertWith("float ramp(int steps, float t)\n"
+                    "{\n"
+                    "    return t / float(steps);\n"
+                    "}\n",
+                    "    fragColor = vec4(ramp(4, iTime), 0.0, 0.0, 1.0);");
+
+    check(result.ok());
+    check(contains(result.code,
+                   "GPU::Float ramp(const GPU::Int& steps, const GPU::Float& t)"));
+    check(contains(result.code, "return t / toFloat(steps);"));
+    check(contains(result.code, "ramp(integer(4), iTime)"));
 };
 
 // An inout parameter is the other way a helper hands a value back, and the

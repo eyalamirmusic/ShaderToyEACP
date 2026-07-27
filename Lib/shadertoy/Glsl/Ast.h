@@ -122,6 +122,15 @@ struct StructLeaf
     std::string type {};
 };
 
+// A function, in both of the two shapes one takes here.
+//
+// As the parser leaves it, `body` indexes the source blocks and the parameter
+// names are the ones the shader wrote. As lowering leaves it - on a shader's
+// `functions` after the pass, for a helper the port declares rather than
+// inlines - `body` indexes the *lowered* blocks and the names are the unique
+// ones the emitter declares. Overloads share a name in both: which one a call
+// means is decided by the argument types, and C++ decides it the same way GLSL
+// did, so a port that keeps the whole overload set needs to infer none of it.
 struct Function
 {
     std::string name {};

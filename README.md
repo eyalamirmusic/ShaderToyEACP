@@ -11,8 +11,21 @@ a matter of opinion into a measurement. Every shader that fails to convert names
 a specific gap, and the number of shaders blocked on each gap is what decides
 which one to close next.
 
-> **⚠️ Early days.** Stages 0 to 14 are done, and **142 of the 204 real
-> Shadertoys convert *and* compile**. Stage 14 is the one the measurement had
+> **⚠️ Early days.** Stages 0 to 15 are done, and **151 of the 203 real
+> Shadertoys convert *and* compile**. Stage 15 is the one that undid a
+> conclusion rather than a gap: stage 11 had decided an overloaded helper is one
+> the port must refuse, because GLSL resolves the call on parameter types and
+> nothing here infers them. True of inlining, and beside the point — a helper
+> does not have to be inlined. A C++ function over handles records its body
+> inline wherever it is called, so a port that *declares* its helpers emits the
+> same graph and hands the overload back to the C++ compiler, which resolves it
+> on the same argument types GLSL did. 143 converted became 152 and 141 compiled
+> became 151, the corpus's generated headers shrank by a third, and three things
+> came out from underneath: `select` over two integers is a gap in eacp,
+> `float(v)` over a vector is its first component and had been passing the
+> vector on whole, and a bare `{ }` block is a scope the parser still flattens.
+>
+> Stage 14 is the one the measurement had
 > been pointing at since stage 10 and is the largest single move any stage has
 > made: a `return` that is not the last thing a body does blocked 71 of the 204,
 > more than twice the next four rows put together, and it turned out not to be a
@@ -39,7 +52,7 @@ which one to close next.
 > --dataset` now, 204 shaders in five unauthenticated requests, and the first
 > run of it reproduced 99 converted and 95 compiled to the shader. What
 > survived is registered where a build can read it, and `Apps/Gallery` shows
-> 172 shaders rather than 30 — the 30 this repository guarantees, and the 142 it
+> 181 shaders rather than 30 — the 30 this repository guarantees, and the 151 it
 > has only measured, marked as such on screen. Stage 11 is the one before it,
 > and the first the measurement chose rather than an argument: it closed the
 > eacp row that 27 of the 49 compile failures named, found five bugs of this
@@ -47,7 +60,7 @@ which one to close next.
 > The rest of the history:
 >
 > Stages 0 to 8: straight-line GLSL converts,
-> loops become loops, helper functions inline, the intrinsic and
+> loops become loops, helper functions are kept or inlined, the intrinsic and
 > swizzle gaps are closed, texture channels are sampled, the EDSL has real
 > control flow — mutable locals, `if`/`else`, `while`, `break`, `continue` and
 > `select` — it has a signed integer, the operators only integers have, and a
@@ -80,9 +93,12 @@ triangle, the clip-space position and the uniform set, so a port is the body of
 pairs, so `col = col + x` in GLSL is the identical line of C++ — it just rebinds
 the handle to a new graph node. Straight-line shader code translates one for one.
 A GLSL helper costs nothing either: a C++ function over handles records its body
-inline wherever it is called, so the transpiler can substitute the body at the
-source level and a port holds no functions of its own however many the shader
-was written with.
+inline wherever it is called, so the emitted shader is the same whether the port
+declares the helper or the transpiler substitutes its body — and since it is the
+same, the port declares it. What that buys is not a smaller graph. It is the
+overload set, which C++ resolves from the argument types the way GLSL did and
+nothing in the transpiler can, and a generated file the size of the shader
+instead of the size of the shader times how often it calls itself.
 
 **A loop is a loop.** `for (int i = 0; i < 8; i++)` becomes the `loop()` the
 EDSL has, with the counter an `Int` the port declares and steps. A moving bound
@@ -96,9 +112,9 @@ the transpiler could have worked out how long it runs for.
 Lib/shadertoy/Glsl/       lexer, parser, AST, diagnostics  (no GPU dependency)
                           Returns (a body that leaves early, rewritten into one
                           that leaves at the end)
-                          Lower (inlining, constant folding, statements,
-                          scalarising structs, and which locals become
-                          variables)
+                          Lower (helpers kept or inlined, constant folding,
+                          statements, scalarising structs, and which locals
+                          become variables)
 Lib/shadertoy/Emit/       the AST -> C++ EDSL emitter
 Lib/shadertoy/Runtime/    Program (the Shadertoy uniform set + fullscreen pass)
                           Channel (a texture, or a buffer, and the size beside it)
@@ -115,7 +131,7 @@ Lib/shadertoy/Corpus/     Transport (one request, and whatever came back) and
 Tools/Corpus/             shadertoy-fetch, which grows the corpus the counts are
                           measured over
 Corpus/                   shaders the coverage report is measured against
-Corpus/External/          204 real Shadertoys, committed, and the .licences that
+Corpus/External/          203 real Shadertoys, committed, and the .licences that
                           say what each may be used for
 Corpus/Imported/          the eight of those the build holds to compiling
 Tests/Corpus/             the fetcher's bookkeeping, over a stubbed server
@@ -300,22 +316,54 @@ instead of the list of capabilities it actually needs — and an unsupported
 construct is skipped rather than fatal, so one shader reports every wall it hits
 rather than the first.
 
-**Stage 2 — inlining.** *Done.* A call to a helper becomes the helper's body,
-arguments and all, including helpers that call helpers and helpers that write
-back through an `inout` parameter. Flattening puts every local in one C++
-scope, so a name declared inside a body is made unique.
+**Stage 2 — helpers.** *Done.* A helper the shader wrote is one of two things.
+Where the port can declare it — a signature the EDSL has types for, a body that
+is statements and then the value at the end of them, and nothing in it out of a
+member function's reach — it stays a function, lowered once, and its calls stay
+calls. Everything else is inlined, arguments and all, including helpers that
+call helpers and helpers that write back through an `inout` parameter.
+Flattening an inlined one puts its locals in the caller's C++ scope, so a name
+declared inside a body is made unique.
 
-It costs the generated code nothing, which is the whole reason it is the
-transpiler's job rather than the EDSL's: a C++ function over handles records its
-body inline wherever it is called, so a port holds no functions of its own
-however many the shader was written with. That is the same argument stage 8
-would later make about the struct, one level down.
+Neither costs the generated shader anything, which is the whole reason this is
+the transpiler's job rather than the EDSL's: a C++ function over handles records
+its body inline wherever it is called, so the graph is the same either way. That
+is the same argument stage 8 would later make about the struct, one level down —
+and it is why *keeping* a helper was worth doing and was never necessary.
 
-`Lib/shadertoy/Glsl/Lower.cpp` is where the flattening happens, between the
-parser and the emitter, and it is the only place that knows what a helper
-*was*: what will not flatten is reported there and expanded once into a list the
-emitter walks for diagnostics and then throws away. That is what stops one
-construct the port cannot express from hiding every intrinsic underneath it.
+What keeping it buys is the overload set. GLSL resolves `sat(v)` against the
+parameter *types* of every `sat` in the file, nothing in the transpiler infers
+the type of an argument, and stage 11 concluded from that — correctly, given
+inlining — that an overloaded helper is one the port must refuse. A declared
+helper needs none of it: the port emits all three `sat`s and the call, and the
+C++ compiler resolves it by the same rule GLSL did. `user-function: saturate`
+was the third row of the ledger at 7 shaders and 116 occurrences, and it is
+gone.
+
+The rest is the file. A helper is written once instead of once per call site, so
+the corpus's generated headers went from 34,699 lines to 23,147 between them,
+and the worst of them from 2,563 lines to 270. That is not a measurement the
+tables have a column for; it is what makes the generated file something a reader
+can hold next to the GLSL it came from.
+
+`Lib/shadertoy/Glsl/Lower.cpp` is where both paths are decided, between the
+parser and the emitter, and it is the only place that knows what a helper *was*:
+what can be neither declared nor flattened is reported there and expanded once
+into a list the emitter walks for diagnostics and then throws away. That is what
+stops one construct the port cannot express from hiding every intrinsic
+underneath it.
+
+The unit of the decision is the *name* rather than the function. C++ resolves a
+call against every overload of a name at once, so keeping some of a set and
+inlining the rest would offer it a choice the shader never had; one helper that
+cannot be kept takes the rest of its name with it. Four things stop one: an
+`out` parameter, because a C++ reference to a handle is the value and not the
+place and the caller would see nothing written back; a struct in the signature,
+which is the leaves it scalarises into and not a type a signature can name; a
+`return` anywhere but the end, which is the same wall it is inside mainImage;
+and a global the port declares as a local of mainImage, which a member function
+has no way to reach. A global that folded to a number is not one of those — it
+is substituted into the body, so `PI` costs a helper nothing.
 
 It found the first eacp gap the corpus paid for, too — see below.
 
@@ -695,12 +743,48 @@ to check, and draws the wrong thing — and it had been doing so since long befo
 this stage. Moving the tail of a body into an `else` is what made a shader take
 that path often enough to notice.
 
-**What is next**: `type: indexing` is the top row now at 17, and behind it the
-two shapes a `user-function` row can still be — a helper the shader wrote
-several of, which needs argument types this does not infer, and a builtin the
-intrinsic table does not name, which is a line each. Then the parse errors,
-which are a different kind of work, and the two shaders that still convert
-without compiling, each a type inferred wrongly in a different way.
+**Stage 15 — the helper the port declares.** *Done*, and it is the stage that
+undoes a conclusion rather than a gap. Stage 11 had decided that an overloaded
+helper is one the port must refuse, because GLSL resolves the call on argument
+types and nothing here infers them. That was right about the inlining and wrong
+about the port: a helper does not have to be inlined. A C++ function over
+handles records its body inline wherever it is called, so declaring one emits
+the same graph, and a call to it is resolved by whichever C++ compiles the
+port — by the argument types, by the rule GLSL used, without the transpiler
+inferring anything.
+
+So the port declares its helpers, and inlines only what it cannot declare: an
+`out` parameter, a struct in the signature, a `return` that is not the last
+statement, a global that became a local of mainImage. Stage 2 above has the
+whole rule. 143 shaders became 152, and 141 compiled became 151.
+
+Three things came out from under it, and none of them is a helper.
+
+`select` in the EDSL is over the float vocabulary and no other — what it
+constrains its two sides with names the four float handles and stops. An
+integer choice, `int id = left ? 1 : 0`, had been converting and compiling as a
+float all along, and only stopped when a declared helper wanted the `int` back.
+It is a gap in eacp and it is reported as one now, which costs two shaders off
+the converted count: that direction is the point, the same way it was in stage
+11.
+
+A scalar constructor takes as many components as it needs off the front of what
+it was handed, so `float(v)` over a vector is `v.x`. The port had been passing
+the vector on whole — which converts, compiles wherever an `auto` catches it,
+and shades something else.
+
+And the one still open: a bare `{ }` block introduces a scope, and the parser
+flattens it into the enclosing body. A shader with a `vec3 w` outside the braces
+and a `vec2 w` inside them reads the wrong one afterwards. It is the single
+shader in the second table and it had been unreachable behind the row this
+stage closed — which is the argument for closing the biggest row first, again.
+
+**What is next**: `type: indexing` is the top row at 17, and behind it the parse
+errors, which are a different kind of work. `user-function` is now one shape
+rather than two — a builtin the intrinsic table does not name, which is a line
+each — since the helper the shader wrote several of is no longer one at all.
+Then the bare block above, and `intrinsic: select over int`, which is a row in
+eacp's column with two shaders on it.
 
 ## Using it
 
@@ -817,15 +901,15 @@ corpus, registers what survived and compiles it in, which is why the app says
 this on the way up:
 
 ```
-172 shaders: 30 this repository holds and this build guarantees,
-142 a scan measured.
+181 shaders: 30 this repository holds and this build guarantees,
+151 a scan measured.
 ```
 
 There is no switch for it. A gallery that shows some of the shaders depending on
 how a build directory was configured is a gallery nobody can trust the count of,
 and the two halves are kept apart where it matters instead — on screen, since a
 measured entry says so in the title bar. They are different claims: the 30 fail
-this build if one of them stops compiling, and the 142 are shaders a scan says a
+this build if one of them stops compiling, and the 151 are shaders a scan says a
 compiler accepted and nobody has looked at.
 
 No fetch is involved: the shaders are committed, so every build directory scans
@@ -870,7 +954,8 @@ being counted.
 
 ### What does not convert
 
-Over the 204 real Shadertoys in `Vipitis/Shadereval-inputs`, which is the first
+Over the real Shadertoys in `Vipitis/Shadereval-inputs` — 204 when stage 12
+fetched them and 203 in the split as it stands — which is the first
 corpus here that nobody wrote for this project, and which since stage 12 is two
 commands rather than an afternoon — the ones under "Measure a corpus" above.
 `Shaders` is the number blocked by that gap, which is what the roadmap is sorted
@@ -881,27 +966,28 @@ blocking one shader each:
 | --- | ---: | ---: |
 | type: indexing | 17 | 41 |
 | parse-error: unexpected `}` | 8 | 31 |
-| user-function: saturate | 7 | 116 |
 | user-function: radians | 7 | 9 |
 | parse-error: unexpected `return` | 6 | 9 |
 | component-assignment: indexed target | 5 | 18 |
 | type: int | 5 | 8 |
-| parse-error: expected `)`, found `[` | 5 | 7 |
 | parse-error: unexpected `[` | 5 | 7 |
-| user-function: rayMarch | 5 | 5 |
+| parse-error: expected `)`, found `[` | 5 | 7 |
+| type: int ^ | 5 | 5 |
+| intrinsic: inverse | 5 | 5 |
 
-144 of 204 converted with no gaps; 60 reported at least one. The 129 rows below
-these ten block 189 shaders between them, counting a shader once per row it
+152 of 203 converted with no gaps; 51 reported at least one. The 120 rows below
+these ten block 177 shaders between them, counting a shader once per row it
 appears in.
 
-The row that was at the top of this table for four stages is not in it at all
-any more: `control-flow: early return` blocked 71 shaders and stage 14 took it
-off. Most of the `user-function` rows underneath it went with it — `iBox`,
-`render`, `rayMarch` and the rest were helpers that would not inline *because*
-they left early, so the report was naming the same gap twice at two different
-altitudes. What is left in that column is the two things a name can still be:
-a helper the shader wrote several of, and a builtin the intrinsic table does
-not name.
+Two rows that were at the top of this table are not in it at all any more.
+`control-flow: early return` blocked 71 shaders and stage 14 took it off; most
+of the `user-function` rows underneath it went with it — `iBox`, `render`,
+`rayMarch` and the rest were helpers that would not inline *because* they left
+early, so the report was naming the same gap twice at two different altitudes.
+Then `user-function: saturate`, at 7 shaders and 116 occurrences, which stage 15
+took off by declaring the helper instead of inlining it. What is left in that
+column is one thing rather than two: a builtin the intrinsic table does not
+name.
 
 `type: int` is an integer construct the EDSL has no form for, met where a port
 declares the counter of a loop. All 5 of those shaders report something else as
@@ -910,12 +996,9 @@ having anyway, because a gap that names what a shader needs is worth more than a
 silence, which is the argument stage 7 made about the struct.
 
 `radians` arriving as a *user function* is the cheapest row here: it is a GLSL
-builtin the intrinsic table simply does not name. `saturate` is a different
-thing entirely — it is a *helper the shader wrote three of*, one per argument
-type, and since stage 11 an overload set is not something this inlines at all.
-The expensive one is now `type: indexing`, at the top by a margin of two: a
-subscript of anything that is not the one array a Shadertoy reads without
-declaring.
+builtin the intrinsic table simply does not name. The expensive one is
+`type: indexing`, at the top by a margin of nine: a subscript of anything that
+is not the one array a Shadertoy reads without declaring.
 
 Over the corpus in this repository — 21 in `Corpus/`, 8 in `Corpus/Imported/`
 and `Apps/PlasmaPort/Plasma.glsl` — the same report is empty, 30 of 30, which is
@@ -925,16 +1008,18 @@ shaders here were written to convert or picked because they did.
 ### What converts and then does not compile
 
 The second table is the one stage 10 discovered, and it exists because the first
-one cannot see it. Of the 144 shaders that convert, the emitted C++ is fed to a
-compiler; **142 of them build and 2 do not**. Grouped by the first error, with
+one cannot see it. Of the 152 shaders that convert, the emitted C++ is fed to a
+compiler; **151 of them build and 1 does not**. Grouped by the first error, with
 `Unblocks` the number that would compile if this row alone went away:
 
 | Blocker | Shaders | Unblocks | Whose is it |
 | --- | ---: | ---: | --- |
 | Invalid operands — a type inferred wrongly, carried into an operator | 1 | 1 | transpiler |
-| `no viable overloaded '='` — the same wrong type, one statement later | 1 | 1 | transpiler |
 
-Nothing in eacp's column is left in it, which has not been true before. What
+That one row is the bare `{ }` block of stage 15: a scope the parser flattens
+into the body around it, so a shader that shadows a `vec3 w` with a `vec2 w`
+inside braces reads the wrong one after them. Nothing in eacp's column is left
+in this table, which has not been true before. What
 stage 11 was worth, one piece at a time, and what stage 12 was worth after it —
 the history of those two stages rather than a running total, since the current
 figures are the two tables above:
@@ -952,12 +1037,18 @@ figures are the two tables above:
 | Stage 14: a body that leaves early, and the out parameter its branches write | 144 | 134 |
 | An integer literal takes the integer anchor; a compound component write applies to the whole swizzle | 144 | 139 |
 | A component that is already a vector needs no second anchor; eacp: `clamp` takes a literal in any argument position | 144 | 142 |
+| Stage 15: the port declares its helpers instead of inlining them | 154 | 148 |
+| A helper's returned literal is anchored; an overload decides its literals' vocabulary | 154 | 151 |
+| `float(v)` over a vector is its first component | 154 | 151 |
+| `select` over two integers is a gap in eacp, and reported as one | 152 | 151 |
 
-Two rows of that table are worth reading twice, and they are the two that do not
-go up. "An overloaded helper is not inlined" is the only one that moves a number
-*downwards*: two of the shaders it took off the converted list had been
-*compiling*, with a helper body inlined that was written for other argument
-types. A measurement that only ever improves is not measuring.
+Three rows of that table are worth reading twice, and they are the three that do
+not go up. "An overloaded helper is not inlined" moves a number *downwards*: two
+of the shaders it took off the converted list had been *compiling*, with a
+helper body inlined that was written for other argument types. So does "`select`
+over two integers", four stages later, for the same kind of reason — two shaders
+that had been converting were spelling an `int` choice and getting a float. A
+measurement that only ever improves is not measuring.
 
 "Stage 12, over a corpus it fetched itself" moves nothing, and is the first time
 these figures were produced by a machine that also went and got the shaders.
@@ -966,18 +1057,23 @@ stage 12's are over one `shadertoy-fetch --dataset` wrote, and they agree to the
 shader. A number that comes out the same when the whole path to it is rebuilt is
 a different kind of number from one that has only ever been produced once.
 
-The three rows after them are stage 14, and what is worth reading in those is
-that only the first is a capability. The other two are bugs, and every one of
-them had been reachable the whole time behind a shader that stopped converting
-before it got there — which is the argument for closing the biggest row first
-even when the rows underneath look cheaper: what a gap hides is not in any
-table.
+The three rows after them are stage 14, and the four after those are stage 15.
+What is worth reading in both runs is that only the first row of each is a
+capability. The rest are bugs, and every one of them had been reachable the
+whole time behind a shader that stopped converting before it got there — which
+is the argument for closing the biggest row first even when the rows underneath
+look cheaper: what a gap hides is not in any table.
+
+The stage 15 rows are over 203 shaders where the ones above them are over 204;
+the dataset lost one between the two runs. Measured against its own baseline
+rather than against the row above it, the stage is 143 converted and 141
+compiled becoming 152 and 151.
 
 This is still the table to take seriously, because every row in it is a shader
 the coverage report had already called converted. It is also the reason
 `Apps/Gallery` compiles every port rather than a chosen few: the report cannot
 fail a build, and a compiler can — and since stage 12 that goes for the measured
-half as well as the 30, which is 142 headers that compiled one at a time being
+half as well as the 30, which is 151 headers that compiled one at a time being
 made to compile together.
 
 The last row that came off it was `Surface.glsl`'s, in stage 8, and it came off
@@ -1520,6 +1616,13 @@ something else. Two of the four shaders this took off the converted list were in
 exactly that state. It is reported as the helper it could not inline, which is
 what it is, rather than as a row of its own saying the same thing about the same
 name.
+
+Stage 15 took the second half of that back. The refusal was right and the
+reason it gave was too broad: the transpiler cannot resolve an overload, but it
+does not have to, because a port that *declares* its helpers hands the question
+to the C++ compiler, which answers it on the same argument types GLSL used. What
+survives is the rule that nothing here may guess — an overload set is still
+never inlined, it is emitted whole.
 
 Stage 6 found two more here. The first is that a literal has no type of its own:
 `index & 3` needs a `3` and the `int(uv.x * 4.0)` it was built from still needs
