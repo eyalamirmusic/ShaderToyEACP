@@ -23,11 +23,11 @@ using namespace Shadertoy;
 
 namespace
 {
-// The include path a port is compiled against, written by the build - one flag
-// per line, so a path with a space in it stays one flag. Baked in as a path
-// rather than as the flags themselves because the flags are generator
-// expressions, and those are known when the build tree is generated rather than
-// when this file is compiled.
+// The command line a port is compiled with, written by the build - one flag per
+// line, so a path with a space in it stays one flag. Baked in as a path rather
+// than as the flags themselves because the flags are generator expressions, and
+// those are known when the build tree is generated rather than when this file
+// is compiled.
 eacp::Vector<std::string> compileFlags()
 {
     auto flags = eacp::Vector<std::string> {};
@@ -41,10 +41,11 @@ eacp::Vector<std::string> compileFlags()
     return flags;
 }
 
-// A port is a header declaring one struct whose member functions are defined
-// inline, so type-checking the header is the whole question: there is nothing
-// to instantiate and nothing to link. -fsyntax-only is therefore the compile,
-// and it is what makes scanning a corpus take minutes rather than an hour.
+// The header, and nothing this file chose. Which flags check a header without
+// compiling it, and how they are spelled, is a fact about the driver rather
+// than about scanning - and a driver drops a flag meant for another one instead
+// of refusing it, so a spelling guessed here is a corpus measured against a
+// compiler nobody configured. See Tools/Scan/CMakeLists.txt, which writes them.
 Coverage::Compiler probeCompiler()
 {
     auto flags = compileFlags();
@@ -52,19 +53,16 @@ Coverage::Compiler probeCompiler()
     return [flags](const std::filesystem::path& header)
     {
         auto arguments = flags;
-
-        arguments.add("-fsyntax-only");
-        arguments.add("-fno-caret-diagnostics");
-        arguments.add("-fno-color-diagnostics");
-        arguments.add("-fshow-overloads=best");
-        arguments.add("-ferror-limit=0");
-        arguments.add("-x");
-        arguments.add("c++");
         arguments.add(header.string());
 
         auto result = eacp::Processes::run(SHADERTOY_SCAN_COMPILER, arguments);
 
-        return result.exitCode == 0 ? std::string {} : result.errorOutput;
+        if (result.exitCode == 0)
+            return std::string {};
+
+        // Clang says it on stderr and cl says it on stdout, and a failure
+        // nobody can read is a row the table cannot fill in.
+        return result.errorOutput.empty() ? result.output : result.errorOutput;
     };
 }
 
@@ -104,7 +102,28 @@ int main(int argc, char* argv[])
         return options.help ? 0 : 2;
     }
 
-    auto report = Coverage::scan(options, probeCompiler());
+    auto compiler = probeCompiler();
+
+    // Before the corpus, the compiler. A scan that cannot compile anything at
+    // all still prints a table and still registers what survived, and what
+    // survived is nothing - so a build wired to it goes on quietly missing
+    // every shader it was supposed to measure. That is the one failure this
+    // reports instead of tabulating.
+    if (auto broken = Coverage::checkCompiler(compiler, options.out);
+        !broken.empty())
+    {
+        std::cerr << "The compiler this scans with cannot compile a port at all,\n"
+                     "so nothing it would say about the corpus is a measurement.\n"
+                     "That is the toolchain wiring rather than the shaders: the\n"
+                     "flags are written by Tools/Scan/CMakeLists.txt, and read\n"
+                     "from "
+                  << SHADERTOY_SCAN_FLAGS << ".\n\n"
+                  << broken << "\n";
+
+        return 1;
+    }
+
+    auto report = Coverage::scan(options, compiler);
 
     Coverage::printReport(report, options.verbose);
 

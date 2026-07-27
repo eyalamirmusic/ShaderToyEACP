@@ -803,10 +803,11 @@ renders something plausible. The gallery is also the only target that compiles
 every port, so a shader the transpiler is happy with and a C++ compiler is not
 fails this build rather than going unnoticed.
 
-Those 30 entries are every shader this repository holds, and the other 142 are
-shaders whose licence keeps them off it — so the build goes and gets them.
-Building `Gallery` fetches the corpus, scans it, registers what survived and
-compiles that in, which is why the app says this on the way up:
+Those 30 entries are the shaders this build guarantees, and the other 142 come
+out of `Corpus/External` — the 204 committed beside them, every one carrying the
+permissive licence that let it be committed. Building `Gallery` scans that
+corpus, registers what survived and compiles it in, which is why the app says
+this on the way up:
 
 ```
 172 shaders: 30 this repository holds and this build guarantees,
@@ -821,11 +822,27 @@ this build if one of them stops compiling, and the 142 are shaders a scan says a
 compiler accepted and nobody has looked at.
 
 No fetch is involved: the shaders are committed, so every build directory scans
-the same 204 and a machine with no network measures what every other machine
-does. The scan is per build directory, because what converts and then compiles
-is a fact about that compiler and those flags — and it re-runs whenever the
-shaders or the transpiler it is measuring change, which is the only way the
+the same 204 and a machine with no network measures the same corpus every other
+machine does. The scan is per build directory, because what converts and then
+compiles is a fact about that compiler and those flags — and it re-runs whenever
+the shaders or the transpiler it is measuring change, which is the only way the
 number on the title bar is ever the current one.
+
+Those flags are the build's to write and not the scan's to guess, which took a
+second machine to find out. `shadertoy-scan` used to spell `-fsyntax-only
+-std=c++20` itself, and a driver drops a flag meant for another driver rather
+than refusing it — so on Windows, where the compiler is clang-cl and the command
+line is cl's, every one of them went out with a warning and the corpus was
+compiled at the default standard. Nothing built there could take a port, and
+what the table said was that 0 of 204 shaders compiled: the same sentence a
+corpus this transpiler cannot reach would produce, and a gallery quietly showing
+only the 30 shaders held by hand.
+
+So the command line is written by `Tools/Scan/CMakeLists.txt`, in the spelling
+the driver in this build tree actually parses, and the first header handed to
+the compiler is a four-line shader written by `Coverage::checkCompiler` rather
+than one from the corpus. A compiler that cannot take that one is not measuring
+shaders, and the scan says so and stops instead of registering nothing.
 
 Going past the 204 is the fetcher, and only ever by hand:
 

@@ -66,6 +66,12 @@ endfunction()
 # Scanning stays per build directory, because what converts and then compiles is
 # a fact about this compiler and these flags, and re-runs whenever the shaders or
 # the transpiler being measured change.
+#
+# The compiler is the other step that could silently not have happened, and on a
+# machine whose driver is cl's it did: a scan whose flags never reached it
+# compiles nothing and registers nothing, and this adds no entries rather than
+# failing. So shadertoy-scan compiles a shader of its own before it measures
+# anything, and a probe that cannot take that one fails here instead.
 function(shadertoy_add_measured_corpus target)
     set(shaders "${CMAKE_SOURCE_DIR}/Corpus/External")
     set(registered "${CMAKE_BINARY_DIR}/MeasuredCorpus")

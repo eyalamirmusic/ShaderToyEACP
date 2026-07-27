@@ -154,6 +154,28 @@ auto tGapsSkipTheCompiler = test("Coverage/whatDoesNotConvertIsNotCompiled") = [
     check(std::filesystem::exists(directory / "out" / "Plain.h"));
 };
 
+// A corpus where nothing compiled and a compiler that cannot compile anything
+// look identical from the table, and only one of them is a measurement. The
+// difference is a shader the EDSL has expressed since the first stage: if that
+// one does not compile either, the toolchain is what is wrong.
+auto tCheckCompiler =
+    test("Coverage/aCompilerThatCompilesNothingIsNotAMeasurement") = []
+{
+    auto directory = scratch();
+
+    check(Coverage::checkCompiler(FakeCompiler {}, directory / "out").empty());
+
+    // And the header it checked with is left where a person can compile it by
+    // hand, since a probe nobody can reproduce is a claim rather than a check.
+    check(std::filesystem::exists(directory / "out" / "ProbeCheck.h"));
+
+    auto broken = [](const std::filesystem::path&)
+    { return std::string("error: no member named 'compile'"); };
+
+    check(Coverage::checkCompiler(broken, directory / "out")
+          == "error: no member named 'compile'");
+};
+
 // The two numbers a fix is scored by, which rank the same list differently on
 // purpose: a shader is blocked by whichever blocker it hit first, and compiles
 // the day every blocker it has is closed.

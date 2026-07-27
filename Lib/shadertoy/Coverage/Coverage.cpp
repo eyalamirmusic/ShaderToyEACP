@@ -164,6 +164,18 @@ Vector<std::string> namesFor(const Vector<std::filesystem::path>& sources)
     return names;
 }
 
+std::filesystem::path writeHeader(const std::filesystem::path& out,
+                                  const std::string& structName,
+                                  const std::string& code)
+{
+    auto header = out / (structName + ".h");
+    auto stream = std::ofstream(header, std::ios::binary);
+
+    stream << code;
+
+    return header;
+}
+
 Outcome measure(const std::filesystem::path& source,
                 const std::string& structName,
                 const std::filesystem::path& out,
@@ -187,11 +199,7 @@ Outcome measure(const std::filesystem::path& source,
     if (!outcome.converted)
         return outcome;
 
-    auto header = out / (outcome.name + ".h");
-    auto stream = std::ofstream(header, std::ios::binary);
-
-    stream << result.code;
-    stream.close();
+    auto header = writeHeader(out, outcome.name, result.code);
 
     auto diagnostics = compiler(header);
     outcome.compiled = diagnostics.empty();
@@ -423,6 +431,33 @@ int Report::unblockedBy(const std::string& shape) const
             ++count;
 
     return count;
+}
+
+namespace
+{
+// The shader the compiler is checked with: straight-line arithmetic over the
+// standard uniforms, which is the floor of the corpus and of the EDSL both. A
+// compiler that will not take this one is not measuring shaders.
+constexpr auto canary = R"(
+void mainImage(out vec4 fragColor, in vec2 fragCoord)
+{
+    vec2 uv = fragCoord / iResolution.xy;
+    fragColor = vec4(uv, 0.0, 1.0);
+}
+)";
+} // namespace
+
+std::string checkCompiler(const Compiler& compiler, const std::filesystem::path& out)
+{
+    std::filesystem::create_directories(out);
+
+    auto result = transpile(canary, "ProbeCheck");
+
+    if (!result.ok())
+        return "the transpiler cannot convert the shader this checks with, "
+               "which is a gap in the transpiler and not in the toolchain";
+
+    return compiler(writeHeader(out, "ProbeCheck", result.code));
 }
 
 Report scan(const Options& options, const Compiler& compiler)

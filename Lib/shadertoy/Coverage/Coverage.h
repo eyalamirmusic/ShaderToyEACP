@@ -57,6 +57,22 @@ struct Outcome
 // threads at once, so an implementation has to be one that can be.
 using Compiler = std::function<std::string(const std::filesystem::path& header)>;
 
+// Whether that compiler can compile a port at all, which is not something a
+// scan can take for granted. A driver drops a flag meant for another driver
+// rather than refusing it, so a command line that reaches the wrong one
+// compiles nothing and fails in the shape of a measurement: a corpus where
+// every shader converted and none of them compiled, which is what a scan of a
+// corpus this transpiler cannot yet reach looks like too.
+//
+// So the first header handed over is one written here, from four lines of
+// arithmetic over the standard uniforms - a shader the EDSL has expressed since
+// the first stage. If that does not compile, nothing after it is a measurement
+// of anything and the caller should say so rather than tabulate it.
+//
+// Empty means the probe works. Anything else is what the compiler said.
+std::string checkCompiler(const Compiler& compiler,
+                          const std::filesystem::path& out);
+
 struct Options
 {
     Vector<std::filesystem::path> inputs;
