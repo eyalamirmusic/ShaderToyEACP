@@ -2,8 +2,8 @@
 // palette, a set of light positions or a small lookup table would otherwise be
 // spelled out, and the EDSL has no array type - so the subscript has nothing to
 // subscript. The integer index and the mask that keeps it in range are the same
-// gap from the other side: after unrolling there is usually no integer left,
-// and here there is.
+// gap from the other side: an index the pixel computes rather than one the
+// shader wrote down.
 const vec3 palette[4] = vec3[4](vec3(0.1, 0.1, 0.2),
                                 vec3(0.9, 0.4, 0.2),
                                 vec3(0.2, 0.8, 0.6),

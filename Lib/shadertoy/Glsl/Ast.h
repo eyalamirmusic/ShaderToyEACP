@@ -202,10 +202,11 @@ struct Shader
     Vector<Statement> globals;
     Vector<Statement> statements;
 
-    // Statements the port could not keep - the body of a loop that would not
-    // unroll - kept so that the gaps *inside* them are still counted. They are
-    // walked for diagnostics and their code is thrown away, which is what stops
-    // one unreachable loop from hiding every intrinsic it calls.
+    // Statements the port could not keep - the body of a helper that would not
+    // inline, or a construct the lowering has no form for - kept so that the
+    // gaps *inside* them are still counted. They are walked for diagnostics and
+    // their code is thrown away, which is what stops one construct the port
+    // cannot express from hiding every intrinsic underneath it.
     Vector<Statement> dropped;
 
     // The struct types the shader declared, with their fields: a value of one

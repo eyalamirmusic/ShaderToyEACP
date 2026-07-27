@@ -30,7 +30,7 @@ bool contains(const std::string& haystack, std::string_view needle)
 //
 // Both are transpiled from Corpus/ by the build, so what is compiled below is
 // whatever the transpiler emits today.
-auto tUnrolledPortCompiles = test("Ports/unrolledLoopAndInlinedHelpers") = []
+auto tLoopPortCompiles = test("Ports/loopAndInlinedHelpers") = []
 {
     auto shader = Shadertoy::Ports::Fbm {};
     const auto& source = shader.source();
@@ -38,16 +38,16 @@ auto tUnrolledPortCompiles = test("Ports/unrolledLoopAndInlinedHelpers") = []
     check(!source.source.empty());
     check(contains(source.source, source.fragmentEntry));
 
-    // Four octaves of a helper that hashes four corners: whatever the emitter
-    // names them, the fragment stage has to hold a good many more sin() calls
-    // than the source file's one.
+    // A helper that hashes four corners, inlined into the body of the octave
+    // loop: the four sin() calls of one octave, written once, inside a while.
     auto sines = std::size_t {0};
 
     for (auto at = source.source.find("sin("); at != std::string::npos;
          at = source.source.find("sin(", at + 1))
         ++sines;
 
-    check(sines >= 16);
+    check(sines >= 4);
+    check(contains(source.source, "while ("));
 };
 
 // Nested loops and a helper that writes back through an inout parameter.
@@ -138,10 +138,10 @@ auto tChannelReadsCompile = test("Ports/samplesAtALevelAndFetchesATexel") = []
     check(shader.uniformByteSize() == 80);
 };
 
-// The shape unrolling cannot reach, and the one this whole stage was for: a
-// march whose length depends on what it hits, inside a helper the port had to
-// inline around it. The emitted shader holds a real loop with a real jump - not
-// sixty-four copies of a body, and not a body that quietly lost its break.
+// The shape this whole stage was for: a march whose length depends on what it
+// hits, inside a helper the port had to inline around it. The emitted shader
+// holds a real loop with a real jump, and not a body that quietly lost its
+// break.
 auto tRaymarchPortCompiles = test("Ports/marchesWithADataDependentBreak") = []
 {
     auto shader = Shadertoy::Ports::Raymarch {};

@@ -13,7 +13,7 @@ add_subdirectory(PlasmaPort)
 add_subdirectory(TunnelPort)
 
 # The shape stage 5 opened: a march whose length depends on what it hits, which
-# no amount of unrolling reaches.
+# nothing short of a real loop reaches.
 add_subdirectory(MarchPort)
 
 # And the shape stage 8 opened: a Shadertoy with a buffer, from two .glsl files,

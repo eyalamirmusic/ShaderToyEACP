@@ -272,7 +272,10 @@ auto tHexLiterals = test("Glsl/hexLiterals") = []
                             "TestShader");
 
     check(result.ok());
-    check(countOccurrences(result.code, "p.x()") == 4);
+
+    // The bound is what the const carries, and it reaches the loop header as a
+    // literal rather than as a name the port has no declaration for.
+    check(contains(result.code, "loop(i() < 4,"));
 };
 
 // The parameter names carry through, so a port reads like its source rather
@@ -292,9 +295,9 @@ auto tParameterNames = test("Glsl/keepsParameterNames") = []
 };
 
 // The point of the whole exercise: one shader reports every wall it hits, not
-// the first. A loop that will not unroll does not stop the determinant below it
-// from being counted, because the coverage table is only useful if it sees
-// everything.
+// the first. A construct the port cannot keep does not stop the determinant
+// below it from being counted, because the coverage table is only useful if it
+// sees everything.
 auto tCollectsEveryGap = test("Glsl/collectsEveryGap") = []
 {
     auto result = convert(
@@ -493,10 +496,11 @@ auto tOverloadedHelper = test("Glsl/anOverloadedHelperIsNotInlined") = []
     check(counted.ok());
 };
 
-// A loop bounded by a constant becomes that many copies of its body, with the
-// counter substituted as a literal - so nothing about `int` survives to be a
-// gap, and the locals the body declares are renamed to share one C++ scope.
-auto tUnrollsConstantLoop = test("Glsl/unrollsConstantLoop") = []
+// A loop whose bound is a constant is a loop like any other: the counter is an
+// integer the port declares and steps, the body is written once, and the
+// crossing into float arithmetic is spelled out exactly as the
+// GLSL had to spell it.
+auto tConstantBoundLoop = test("Glsl/constantBoundLoopStaysALoop") = []
 {
     auto result = convert("    vec3 col = vec3(0.0);\n"
                           "    for (int i = 0; i < 3; i++)\n"
@@ -507,11 +511,15 @@ auto tUnrollsConstantLoop = test("Glsl/unrollsConstantLoop") = []
                           "    fragColor = vec4(col, 1.0);");
 
     check(result.ok());
-    check(contains(result.code, "auto wave = sin(fragCoord.x() + 0.0f);"));
-    check(contains(result.code, "auto wave_2 = sin(fragCoord.x() + 1.0f);"));
-    check(contains(result.code, "auto wave_3 = sin(fragCoord.x() + 2.0f);"));
-    check(contains(result.code, "col = col + wave_3;"));
-    check(!contains(result.code, "for"));
+    check(contains(result.code, "auto i = var(0);"));
+    check(contains(result.code, "loop(i() < 3, [&]"));
+    check(contains(result.code, "auto wave = sin(fragCoord.x() + toFloat(i()));"));
+    check(contains(result.code, "i = i() + 1;"));
+
+    // Written once, which is the whole of the change: no copy, and so no
+    // renamed second copy of the name the body declares.
+    check(countOccurrences(result.code, "auto wave =") == 1);
+    check(!contains(result.code, "wave_2"));
 };
 
 // A loop the transpiler cannot count is a loop the port runs: the init above
@@ -549,8 +557,8 @@ auto tIntegerCounter = test("Glsl/integerCounterStaysAnInteger") = []
     check(contains(result.code, "i = i() + 1;"));
 };
 
-// A while is the loop with nothing to unroll at all, and it lowers to the same
-// statement a for does.
+// A while lowers to the same statement a for does, which is now the only
+// statement either of them lowers to.
 auto tWhileLoop = test("Glsl/whileConverts") = []
 {
     auto result = convert("    float d = 0.0;\n"
@@ -564,9 +572,9 @@ auto tWhileLoop = test("Glsl/whileConverts") = []
     check(contains(result.code, "d = d() + 0.1f;"));
 };
 
-// Nested loops multiply out, the inner one unrolling once per copy of the
-// outer.
-auto tUnrollsNestedLoops = test("Glsl/unrollsNestedLoops") = []
+// Nested loops stay nested, which is one loop inside another and not four
+// copies of anything. The body is written once however deep it sits.
+auto tNestedLoops = test("Glsl/nestedLoopsStayNested") = []
 {
     auto result = convert("    float total = 0.0;\n"
                           "    for (int y = 0; y < 2; y++)\n"
@@ -577,20 +585,18 @@ auto tUnrollsNestedLoops = test("Glsl/unrollsNestedLoops") = []
     check(result.ok());
     check(countOf(result, Glsl::DiagnosticKind::ControlFlow) == 0);
 
-    // Four copies, and the products of the two counters folded away with them.
-    auto assignments = std::size_t {0};
+    check(countOccurrences(result.code, "loop(") == 2);
+    check(countOccurrences(result.code, "total = total") == 1);
 
-    for (auto at = result.code.find("total = total"); at != std::string::npos;
-         at = result.code.find("total = total", at + 1))
-        ++assignments;
-
-    check(assignments == 4);
+    // Each counter is its own variable, and the inner one is re-initialised by
+    // the outer body rather than carried over from the last time round.
+    check(contains(result.code, "auto y = var(0);"));
+    check(contains(result.code, "loop(x() < 2, [&]"));
 };
 
-// A jump is what an unrollable loop cannot have: the copies would each need to
-// know whether an earlier one had already stopped. So a loop holding one stays
-// a loop, however countable its header is.
-auto tLoopWithBreak = test("Glsl/loopWithBreakIsNotUnrolled") = []
+// A loop with a jump in it is the shape that needed statements in the first
+// place, and it lowers the way every other loop now does.
+auto tLoopWithBreak = test("Glsl/loopWithABreakKeepsIt") = []
 {
     auto result = convert("    float d = 0.0;\n"
                           "    for (int i = 0; i < 8; i++)\n"
@@ -683,7 +689,8 @@ auto tComparisons = test("Glsl/comparisonsConvert") = []
 // The names a loop or a branch writes from outside its own scope are the ones
 // the port has to hold in a variable: a C++ handle rebound inside a lambda is a
 // new handle that dies at the closing brace. Everything else stays a plain
-// binding, which is what keeps an unrolled shader reading the way it did.
+// binding, which is what keeps the straight-line half of a shader reading the
+// way it did.
 auto tVariablePromotion = test("Glsl/writtenNamesBecomeVariables") = []
 {
     auto result = convert("    float outer = 0.0;\n"
@@ -1154,10 +1161,10 @@ auto tEarlyReturn = test("Glsl/earlyReturnIsReported") = []
     check(reports(result, Glsl::DiagnosticKind::ControlFlow, "early return"));
 };
 
-// However many copies a loop makes of a gap, it is one gap at one place in the
-// file: a count that grew with the trip count would rank a shader by how long
-// its loops are.
-auto tUnrollingDoesNotInflate = test("Glsl/unrollingCountsGapsOnce") = []
+// However many times the lowering walks past a gap, it is one gap at one place
+// in the file: a count that grew with how often a body is reached would rank a
+// shader by the shape of its calls rather than by what it needs.
+auto tGapsAreCountedOnce = test("Glsl/aGapIsCountedOnce") = []
 {
     auto result = convert("    float total = 0.0;\n"
                           "    for (int i = 0; i < 16; i++)\n"

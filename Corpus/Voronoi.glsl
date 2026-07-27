@@ -1,7 +1,6 @@
 // The nearest of nine feature points, over a rotated grid. Two things here that
-// Fbm.glsl does not have: loops nested inside each other, so the inner one
-// unrolls once per copy of the outer, and a helper that writes through an inout
-// parameter rather than returning.
+// Fbm.glsl does not have: loops nested inside each other, and a helper that
+// writes through an inout parameter rather than returning.
 const float SCALE = 6.0;
 
 void rotate(inout vec2 p, float angle)

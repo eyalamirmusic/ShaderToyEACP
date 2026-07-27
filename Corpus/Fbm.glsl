@@ -1,7 +1,7 @@
 // Value noise summed over four octaves: two helper functions and a
 // constant-trip-count loop, which is the shape a very large slice of Shadertoy
 // has and the one stage 2 was built for. Nothing here asks the EDSL for
-// anything - it converts because the loop unrolls and the helpers inline.
+// anything the loop and the inlined helpers do not already give it.
 float hash(vec2 p)
 {
     return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);

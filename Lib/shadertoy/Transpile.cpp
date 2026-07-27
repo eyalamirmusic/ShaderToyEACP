@@ -10,10 +10,10 @@ namespace Shadertoy
 {
 namespace
 {
-// One gap at one place in the file is one occurrence, however many copies of it
-// the port ends up holding: an unrolled loop repeats its body verbatim, and a
-// count that grew with the trip count would rank a shader by how long its loops
-// are rather than by what it needs.
+// One gap at one place in the file is one occurrence, however many times the
+// lowering walks past it: a helper inlined at five call sites is one gap and
+// not five, and a count that grew with the inlining would rank a shader by how
+// often it calls something rather than by what it needs.
 Glsl::Vector<Glsl::Diagnostic> distinct(const Glsl::Vector<Glsl::Diagnostic>& all)
 {
     auto seen = std::set<std::tuple<int, std::string, int>> {};

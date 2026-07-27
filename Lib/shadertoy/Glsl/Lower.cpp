@@ -9,10 +9,6 @@ namespace Shadertoy::Glsl
 {
 namespace
 {
-// A loop long enough to hit either of these is one the EDSL should be growing
-// real control flow for, not one to paper over with a million statements.
-constexpr auto maxIterationsPerLoop = 512;
-constexpr auto maxIterationsPerShader = 8192;
 constexpr auto maxInlineDepth = 16;
 
 // What a source name currently stands for. The node is in the *output* arena:
@@ -283,9 +279,10 @@ private:
     // --- constant folding -------------------------------------------------
 
     // Two questions share this walk. Substitution folding - `named` off - only
-    // resolves a name that already stands for a number, which is what turns an
-    // unrolled counter into a literal while leaving `PI` spelled as PI. Trip
-    // counts turn `named` on, so a `const float STEPS = 8.0` bounds a loop too.
+    // resolves a name that already stands for a number, so a local the shader
+    // gave a literal to folds while `PI` stays spelled as PI. Turning `named`
+    // on resolves the name itself, which is what a `const float STEPS = 8.0`
+    // needs to be worth anything.
     bool fold(int node, double& out, bool named) const
     {
         if (node < 0)
@@ -332,14 +329,6 @@ private:
 
     bool foldIdentifier(const std::string& name, double& out, bool named) const
     {
-        auto substituted = overrides.find(name);
-
-        if (substituted != overrides.end())
-        {
-            out = substituted->second;
-            return true;
-        }
-
         const auto* binding = find(name);
 
         if (binding == nullptr || binding->node < 0)
@@ -832,60 +821,6 @@ private:
     }
 
     // --- inlining ---------------------------------------------------------
-
-    // Whether a statement stops the loop around it from being unrolled: a jump
-    // the copies cannot reproduce, or something the parser could not keep. A
-    // jump inside a nested loop belongs to that loop and is carried into every
-    // copy intact, so the walk stops counting them there.
-    bool blocksUnrolling(const Statement& statement, bool inNestedLoop) const
-    {
-        switch (statement.kind)
-        {
-            case StatementKind::Unsupported:
-            case StatementKind::Return:
-                return true;
-
-            case StatementKind::Break:
-            case StatementKind::Continue:
-                return !inNestedLoop;
-
-            case StatementKind::For:
-                return blocksUnrolling(statement.init, inNestedLoop)
-                       || blocksUnrolling(statement.step, inNestedLoop)
-                       || blocksUnrolling(statement.body, true);
-
-            case StatementKind::While:
-                return blocksUnrolling(statement.body, true);
-
-            case StatementKind::If:
-                return blocksUnrolling(statement.body, inNestedLoop)
-                       || blocksUnrolling(statement.elseBody, inNestedLoop);
-
-            default:
-                return false;
-        }
-    }
-
-    bool blocksUnrolling(int block, bool inNestedLoop) const
-    {
-        if (block < 0)
-            return false;
-
-        for (const auto& statement: source.block(block).statements)
-            if (blocksUnrolling(statement, inNestedLoop))
-                return true;
-
-        return false;
-    }
-
-    // The same question asked of a loop about itself rather than about the one
-    // around it: its own body is not nested, so a jump there is a jump out of
-    // exactly the loop being considered for unrolling.
-    bool blocksUnrolling(const Statement& loop) const
-    {
-        return blocksUnrolling(loop.init, false) || blocksUnrolling(loop.step, false)
-               || blocksUnrolling(loop.body, false);
-    }
 
     // Whether a statement stands between a helper and being inlined. A jump no
     // longer does - the port has loops of its own to put one in - so what is
@@ -1400,9 +1335,8 @@ private:
         }
     }
 
-    // A jump only means anything inside a loop the port kept as a loop; one the
-    // unroller swallowed never reaches here, since a body holding a jump is not
-    // one it unrolls.
+    // A jump only means anything inside a loop, which is now the only thing a
+    // loop ever becomes - so a `break` reaching here is one the port runs.
     void lowerJump(const Statement& statement, Vector<Statement>& into)
     {
         auto isBreak = statement.kind == StatementKind::Break;
@@ -1858,40 +1792,17 @@ private:
 
     // --- loops ------------------------------------------------------------
 
+    // Every `for` becomes the loop the port runs: the init above it, the
+    // condition tested each time round, and the step as the last thing the body
+    // does - which is where a `continue` has to take it too, hence loopSteps.
+    //
+    // A bound the transpiler could work out on paper makes no difference to
+    // any of that: what a loop needs from the EDSL is the same either way.
     void lowerFor(const Statement& statement, Vector<Statement>& into)
     {
         if (statement.body < 0 || statement.init < 0 || statement.step < 0)
             return;
 
-        auto counter = std::string {};
-        auto values = Vector<double> {};
-
-        if (!blocksUnrolling(statement) && iterationsOf(statement, counter, values)
-            && iterations + values.size() <= maxIterationsPerShader)
-        {
-            iterations += values.size();
-
-            for (auto value: values)
-            {
-                scopes.add(Scope {});
-
-                auto binding = Binding {};
-                binding.node = number(value);
-                binding.isConstant = true;
-                binding.value = value;
-                bind(counter, binding);
-
-                lowerInto(source.block(statement.body).statements, into);
-                scopes.pop_back();
-            }
-
-            return;
-        }
-
-        // A loop the transpiler cannot run on paper becomes one the port runs:
-        // the init above it, the condition tested each time round, and the step
-        // as the last thing the body does - which is where a `continue` has to
-        // take it too, hence loopSteps.
         scopes.add(Scope {});
 
         ++keepingCounters;
@@ -2031,94 +1942,6 @@ private:
         into.add(std::move(branch));
     }
 
-    // Runs the loop header on paper. Anything that cannot be worked out from
-    // literals - a bound that moves, a counter the body writes to - leaves the
-    // loop for stage 5.
-    bool iterationsOf(const Statement& statement,
-                      std::string& counter,
-                      Vector<double>& values)
-    {
-        if (statement.init < 0 || statement.step < 0 || statement.condition < 0)
-            return false;
-
-        const auto& init = source.block(statement.init).statements;
-        const auto& step = source.block(statement.step).statements;
-
-        if (init.size() != 1 || step.size() != 1)
-            return false;
-
-        auto declares = init[0].kind == StatementKind::Declare
-                        || init[0].kind == StatementKind::Assign;
-
-        counter = init[0].name;
-
-        if (!declares || counter.empty() || step[0].name != counter
-            || step[0].kind != StatementKind::Assign
-            || assignsTo(statement.body, counter))
-            return false;
-
-        auto value = 0.0;
-
-        if (!fold(init[0].value, value, true))
-            return false;
-
-        while (values.size() < maxIterationsPerLoop)
-        {
-            auto keepGoing = 0.0;
-
-            if (!foldWithCounter(statement.condition, counter, value, keepGoing))
-                return false;
-
-            if (keepGoing == 0.0)
-                return true;
-
-            values.add(value);
-
-            if (!applyStep(step[0], counter, value))
-                return false;
-        }
-
-        return false;
-    }
-
-    bool applyStep(const Statement& step, const std::string& counter, double& value)
-    {
-        auto operand = 0.0;
-
-        if (!foldWithCounter(step.value, counter, value, operand))
-            return false;
-
-        auto next = operand;
-
-        if (step.op == "+")
-            next = value + operand;
-        else if (step.op == "-")
-            next = value - operand;
-        else if (step.op == "*")
-            next = value * operand;
-        else if (step.op == "/" && operand != 0.0)
-            next = value / operand;
-        else if (!step.op.empty())
-            return false;
-
-        if (next == value)
-            return false;
-
-        value = next;
-        return true;
-    }
-
-    bool foldWithCounter(int node,
-                         const std::string& counter,
-                         double value,
-                         double& out)
-    {
-        overrides[counter] = value;
-        auto folded = fold(node, out, true);
-        overrides.erase(counter);
-        return folded;
-    }
-
     // --- variables --------------------------------------------------------
 
     // Which locals the port has to declare as mutable variables. A C++ handle
@@ -2240,7 +2063,6 @@ private:
     Vector<std::string> inlining;
     std::set<std::string> measured;
     std::map<std::string, int> namesUsed;
-    std::map<std::string, double> overrides;
 
     // The step block of each loop the port kept, innermost last: what a
     // `continue` inside it has to run before jumping. -1 for a `while`, which
@@ -2254,7 +2076,6 @@ private:
     int keepingCounters = 0;
 
     Vector<Diagnostic> diagnostics;
-    int iterations = 0;
     int line = 0;
 };
 } // namespace

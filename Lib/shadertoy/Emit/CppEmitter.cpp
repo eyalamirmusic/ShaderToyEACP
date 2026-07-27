@@ -841,7 +841,7 @@ private:
 
     // --- layout ----------------------------------------------------------
 
-    // Everything below exists because an unrolled, inlined body arrives as one
+    // Everything below exists because an inlined body arrives as one
     // expression however long it started out, and a generated header sits in a
     // project held to eacp's column limit.
 
@@ -1732,9 +1732,9 @@ private:
         if (width > 0)
             return emitVectorCall(node, expr, width);
 
-        // `float(x)` is a conversion, and after unrolling has substituted the
-        // counter it is usually a conversion of a literal. Over a float it is
-        // the identity, and the parentheses stay where dropping them would
+        // `float(x)` is a conversion, and over a float it is the identity -
+        // usually of a literal the folding has already worked out. The
+        // parentheses stay where dropping them would
         // re-bind the expression around it; over anything else it is a crossing
         // between vocabularies, which the EDSL spells out. A condition is one
         // of those - `float(a > b)` is 1.0 or 0.0 and is what a shader counting

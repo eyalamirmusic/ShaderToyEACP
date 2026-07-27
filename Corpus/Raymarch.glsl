@@ -1,6 +1,6 @@
 // A sphere raymarch: the shape of shader stage 1 cannot reach at all. The march
 // is a loop with a data-dependent break, and the scene is a helper function, so
-// this one needs both the unrolling of stage 2 and the real control flow of
+// this one needs both the inlining of stage 2 and the real control flow of
 // stage 5 before it converts.
 float sdSphere(vec3 p, float r)
 {

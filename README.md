@@ -11,15 +11,21 @@ a matter of opinion into a measurement. Every shader that fails to convert names
 a specific gap, and the number of shaders blocked on each gap is what decides
 which one to close next.
 
-> **⚠️ Early days.** Stages 0 to 12 are done. Stage 12 is the first one that
-> moved no number at all, and that is what it was for: 95 of the 204 real
-> Shadertoys convert *and* compile exactly as they did before it, and now
-> **anybody can get that number back**. The corpus the counts are measured over
+> **⚠️ Early days.** Stages 0 to 13 are done, and **96 of the 204 real
+> Shadertoys convert *and* compile**. Stage 13 is the one the weakest layer of
+> validation paid for: somebody walked the gallery with the arrow keys, it froze
+> on the 43rd shader, and underneath were two walks in eacp's emitter that were
+> superlinear in the size of the graph — one of them exponential. Neither is
+> reachable by a shader small enough for anybody to have written by hand, and no
+> report or compiler can see either.
+>
+> Stage 12 before it is the one that moved no number at all, and that is what it
+> was for: it made the measurement reproducible. The corpus the counts are measured over
 > was pulled by hand and could not be asked for; it is `shadertoy-fetch
 > --dataset` now, 204 shaders in five unauthenticated requests, and the first
 > run of it reproduced 99 converted and 95 compiled to the shader. What
 > survived is registered where a build can read it, and `Apps/Gallery` shows
-> 123 shaders rather than 28 — the 28 this repository guarantees, and the 95 it
+> 124 shaders rather than 28 — the 28 this repository guarantees, and the 96 it
 > has only measured, marked as such on screen. Stage 11 is the one before it,
 > and the first the measurement chose rather than an argument: it closed the
 > eacp row that 27 of the 49 compile failures named, found five bugs of this
@@ -27,7 +33,7 @@ which one to close next.
 > The rest of the history:
 >
 > Stages 0 to 8: straight-line GLSL converts,
-> constant-trip-count loops unroll, helper functions inline, the intrinsic and
+> loops become loops, helper functions inline, the intrinsic and
 > swizzle gaps are closed, texture channels are sampled, the EDSL has real
 > control flow — mutable locals, `if`/`else`, `while`, `break`, `continue` and
 > `select` — it has a signed integer, the operators only integers have, and a
@@ -64,26 +70,19 @@ inline wherever it is called, so the transpiler can substitute the body at the
 source level and a port holds no functions of its own however many the shader
 was written with.
 
-**Constant-trip-count loops are unrolled by the transpiler**, which reached a
-large slice of the corpus before the EDSL had control flow at all and is still
-what a countable loop gets: `for (int i = 0; i < 8; i++)` becomes eight recorded
-copies of the body, with the counter substituted as a literal and folded through
-whatever it touches. This does not blow up the emitted source — eacp's emitter
-promotes any node used more than once to a named local, so an unrolled 64-step
-march emits linear MSL/HLSL rather than a nested expression.
-
-A loop whose length the transpiler cannot work out — a moving bound, or a body
-that breaks on what it finds — is the one that needs statements, and gets them.
-Which of the two a loop takes is decided by reading its header and its body, not
-by asking the author.
+**A loop is a loop.** `for (int i = 0; i < 8; i++)` becomes the `loop()` the
+EDSL has, with the counter an `Int` the port declares and steps. A moving bound
+and a `break`-on-hit march get the same statement, because there is only one
+kind of loop here: what a loop needs from the EDSL does not depend on whether
+the transpiler could have worked out how long it runs for.
 
 ## What is here now
 
 ```
 Lib/shadertoy/Glsl/       lexer, parser, AST, diagnostics  (no GPU dependency)
-                          Lower (unrolling, inlining, constant folding,
-                          statements, scalarising structs, and which locals
-                          become variables)
+                          Lower (inlining, constant folding, statements,
+                          scalarising structs, and which locals become
+                          variables)
 Lib/shadertoy/Emit/       the AST -> C++ EDSL emitter
 Lib/shadertoy/Runtime/    Program (the Shadertoy uniform set + fullscreen pass)
                           Channel (a texture, or a buffer, and the size beside it)
@@ -97,6 +96,7 @@ Tools/Scan/               shadertoy-scan, which runs both over a directory
 Lib/shadertoy/Corpus/     Transport (one request, and whatever came back), the
                           API and the books a 1500-request month needs, and the
                           published dataset that needs no key at all
+                          (Json.h is what reads either one's replies)
 Tools/Corpus/             shadertoy-fetch, which pulls Shadertoys by id, or the
                           whole corpus the counts are measured over
 Corpus/                   shaders the coverage report is measured against
@@ -111,7 +111,8 @@ Apps/TunnelPort/          a converted port that reads a texture channel
 Apps/MarchPort/           a converted port that marches a loop with a break
 Apps/TrailPort/           two converted ports, one reading what it wrote last frame
 Apps/Gallery/             every converted port, switchable, on screen - the
-                          ones committed here, and a scanned corpus beside them
+                          ones committed here, and the measured corpus it
+                          fetches and scans for itself beside them
 Tests/Glsl/               lowering and diagnostics
 Tests/Runtime/            vertex layout, uniform block layout, generated stages,
                           corpus ports compiled from their GLSL by the build, and
@@ -282,22 +283,22 @@ instead of the list of capabilities it actually needs — and an unsupported
 construct is skipped rather than fatal, so one shader reports every wall it hits
 rather than the first.
 
-**Stage 2 — unrolling and inlining.** *Done.* A `for` whose trip count the
-transpiler can work out becomes that many copies of its body, with the counter
-substituted as a literal — which is what keeps the ordinary loop counter off the
-gap list, since after unrolling there is no integer left to express. (One that
-survives, in a loop stage 5 keeps, becomes a float instead — the same reasoning
-`iFrame` is one.) A call to a helper
-becomes the helper's body, arguments and all, including helpers that call
-helpers and helpers that write back through an `inout` parameter. Flattening
-puts every local in one C++ scope, so a name declared inside a body is renamed
-per copy.
+**Stage 2 — inlining.** *Done.* A call to a helper becomes the helper's body,
+arguments and all, including helpers that call helpers and helpers that write
+back through an `inout` parameter. Flattening puts every local in one C++
+scope, so a name declared inside a body is made unique.
 
-`Lib/shadertoy/Glsl/Lower.cpp` is where both happen, between the parser and the
-emitter, and it is the only place that knows what a loop or a helper *was*: what
-will not flatten is reported there and expanded once into a list the emitter
-walks for diagnostics and then throws away. That is what stops one loop the
-transpiler cannot count from hiding every intrinsic inside it.
+It costs the generated code nothing, which is the whole reason it is the
+transpiler's job rather than the EDSL's: a C++ function over handles records its
+body inline wherever it is called, so a port holds no functions of its own
+however many the shader was written with. That is the same argument stage 8
+would later make about the struct, one level down.
+
+`Lib/shadertoy/Glsl/Lower.cpp` is where the flattening happens, between the
+parser and the emitter, and it is the only place that knows what a helper
+*was*: what will not flatten is reported there and expanded once into a list the
+emitter walks for diagnostics and then throws away. That is what stops one
+construct the port cannot express from hiding every intrinsic underneath it.
 
 It found the first eacp gap the corpus paid for, too — see below.
 
@@ -329,8 +330,8 @@ texel landed in.
 
 **Stage 5 — real control flow.** *Done.* `Var`, `Bool`, `select`, `ifThen`,
 `loop`, `breakLoop` and `continueLoop` in eacp's shader IR, driven by the
-shaders unrolling cannot reach: `break`-on-hit raymarchers, dynamic bounds,
-`while`. This is the stage that turns the EDSL from an expression tree into a
+shaders nothing decided on paper can reach: `break`-on-hit raymarchers, dynamic
+bounds, `while`. This is the stage that turns the EDSL from an expression tree into a
 language, and it is the largest single payoff to eacp.
 
 `ShaderGraph` now holds a statement list beside its expression store —
@@ -348,13 +349,13 @@ header, so binding it beforehand would test a value that never changes again.
 Both are pinned by codegen tests; the second one is the difference between a
 raymarcher and a hang.
 
-On the transpiler side, a `for` the trip count cannot be worked out becomes the
-loop the port runs — init above it, step at the end of the body, which is where
-a `continue` has to take the step with it. Which locals become variables is
+On the transpiler side, a `for` becomes the loop the port runs — init above it,
+step at the end of the body, which is where a `continue` has to take the step
+with it. Which locals become variables is
 decided after lowering: any name a loop or a branch writes and did not itself
 declare, because a C++ handle rebound inside a lambda is a new handle that dies
-at the closing brace. Everything else stays a plain binding, so an unrolled
-shader reads exactly as it did.
+at the closing brace. Everything else stays a plain binding, so the
+straight-line half of a shader reads exactly as it did.
 
 **Stage 6 — the integer and the array.** *Done.* `Int`, the operators only
 integers have (`%`, `&`, `|`, `^`, `<<`, `>>`, `~`), the comparisons, `min`/
@@ -617,10 +618,10 @@ instead of it, because the two mean different things and only one of them can
 keep the rule that makes it worth having. The 29 ports built here — 28 entries,
 since a two-pass shader is one of them — fail the build if any of them converts
 and will not compile, which is the whole reason each is in that target. The
-fetched corpus cannot keep that rule: 105 of the 204 do not convert and 4 more
+fetched corpus cannot keep that rule: 105 of the 204 do not convert and 3 more
 do not compile, so a build that insisted would never run.
 
-So the gallery has a guaranteed half and a measured half — 123 entries — and
+So the gallery has a guaranteed half and a measured half — 124 entries — and
 what tells them apart is the title bar rather than the build, since which half a
 doubtful frame belongs to is the first thing anybody looking at one wants to
 know. Getting the second half is no switch and no manual step: building the
@@ -630,35 +631,62 @@ gallery in the wrong directory and get 28 shaders and no explanation. A count
 that depends on how a build directory was configured is not a count.
 
 Building it is the second check on the same claim, and not the same check: the
-scan compiles each header alone, and this compiles all 95 into one translation
+scan compiles each header alone, and this compiles all 96 into one translation
 unit beside the 28. It also settled what an external port does with a channel it
-was never handed. Only one of the 95 declares one — but every declared texture
+was never handed. Only one of them declares one — but every declared texture
 is a binding the draw has to satisfy, and what the page bound it to is in
 neither the GLSL nor the corpus, so an unwired port gets the generated image the
 textured ports here already use. The frame is then the shader's arithmetic over
 *something* rather than a draw missing a binding.
 
 **And then looking at them,** which is the piece with no tool and the reason for
-the other three. 95 shaders nobody here wrote, converted by a transpiler that
+the other three. 96 shaders nobody here wrote, converted by a transpiler that
 has never once been checked against a picture of what they should look like, is
 a great many frames to be quietly wrong about — and every validation layer above
 stops short of exactly that. What the three pieces above buy is that comparison
-being *possible*: it is now one build away, and entry 37 of 123 is `DdlyRr` by
-lush3dash1, drawing something, which is the first frame from that half anybody
-has seen. They do not buy the comparison being *done* — the imported eight are
+being *possible*: it is now one build away, and `DdlyRr` by lush3dash1 was the
+first frame from that half anybody looked at. They do not buy the comparison being *done* — the imported eight are
 still the only ports checked against the page they came from — and the ledger
 should not pretend otherwise.
 
-**Stage 13 — the early return.** *Next*, and for the first time the list is one
-the scan prints rather than one anybody chose — and, since stage 12, one anybody
-can print again. **An early `return`** blocks 71 of the 204, which is more than
-twice the next four rows put together.
-A `return` in the middle of a function is how a shader says "not this pixel",
-and neither unrolling nor inlining flattens one — what it needs is either a
-`Var` the inlined body writes and the caller reads under a guard, or a real
-early exit in the EDSL. Behind it: indexing (16), the helpers the inliner will
-not take, and the four shaders that still convert without compiling, each a type
-inferred wrongly in a different way.
+**Stage 13 — what looking at them found.** *Done*, and it is the first thing
+this project has found that is not about what eacp can express but about what it
+can express *in finite time*.
+
+Stage 12 ended by conceding that the shaders nobody here wrote had been compiled
+and never looked at, and that the gallery was the tool for that and nobody's
+afternoon yet. The afternoon happened, and it lasted until the 43rd shader: the
+app froze on iq's `Dt3SDH` and never came back. Pressing the right arrow is not
+a sophisticated instrument, and it went straight past every layer above it.
+
+Underneath were two walks in eacp's emitter, both superlinear in the size of the
+graph and one of them exponential — see the ledger for what they were and why a
+DAG walked as a tree is the shape of the bug. What matters here is what makes
+them a *stage* rather than a bug report:
+
+- **No report can see this.** The coverage table says a shader converted. It
+  cannot say the conversion takes forever, because it does not run the EDSL.
+- **No compiler can see it either.** The scan had already passed all 96, because
+  `-fsyntax-only` over a generated header type-checks the C++ and never builds
+  the graph the C++ would build.
+- **No test here could have caught it**, because every shader small enough to
+  write by hand is small enough for an exponential walk to finish. It took a
+  corpus of other people's shaders, and then a person looking at them.
+
+That is three of the four validation layers stepping over the same fault, and
+the fourth one being a human with an arrow key. The ledger below has the fix,
+and the correction beside it: the first attempt at it broke 18 of eacp's own
+tests, which is the argument for running the dependency's suite and not only
+one's own.
+
+**What is next** is the row that has been at the top since stage 10: **an early
+`return`** blocks 71 of the 204, more than twice the next four rows put
+together. A `return` in the middle of a function is how a shader says "not this
+pixel", and inlining does not flatten one — what it needs is either a `Var` the
+inlined body writes and the caller reads under a guard, or a real early exit in
+the EDSL. Behind it: indexing (16), the helpers the inliner will not take, and
+the three shaders that still convert without compiling, each a type inferred
+wrongly in a different way.
 
 ## Using it
 
@@ -761,21 +789,21 @@ renders something plausible. The gallery is also the only target that compiles
 every port, so a shader the transpiler is happy with and a C++ compiler is not
 fails this build rather than going unnoticed.
 
-Those 28 entries are every shader this repository holds, and the other 95 are
+Those 28 entries are every shader this repository holds, and the other 96 are
 shaders whose licence keeps them off it — so the build goes and gets them.
 Building `Gallery` fetches the corpus, scans it, registers what survived and
 compiles that in, which is why the app says this on the way up:
 
 ```
-123 shaders: 28 this repository holds and this build guarantees,
-95 a scan measured.
+124 shaders: 28 this repository holds and this build guarantees,
+96 a scan measured.
 ```
 
 There is no switch for it. A gallery that shows some of the shaders depending on
 how a build directory was configured is a gallery nobody can trust the count of,
 and the two halves are kept apart where it matters instead — on screen, since a
 measured entry says so in the title bar. They are different claims: the 28 fail
-this build if one of them stops compiling, and the 95 are shaders a scan says a
+this build if one of them stops compiling, and the 96 are shaders a scan says a
 compiler accepted and nobody has looked at.
 
 The fetch reaches the network the first time and never again while the shaders
@@ -841,19 +869,25 @@ blocking one shader each:
 | parse-error: unexpected `return` | 6 | 9 |
 | user-function: radians | 6 | 8 |
 | component-assignment: indexed target | 5 | 18 |
-| parse-error: expected `)`, found `[` | 5 | 7 |
+| type: int | 5 | 8 |
 
-99 of 204 converted with no gaps; 105 reported at least one. The 212 rows below
+99 of 204 converted with no gaps; 105 reported at least one. The 211 rows below
 these ten block 310 shaders between them, counting a shader once per row it
 appears in.
+
+`type: int` is an integer construct the EDSL has no form for, met where a port
+declares the counter of a loop. All 5 of those shaders report something else as
+well, so nothing is blocked on this row alone — it is the kind of row worth
+having anyway, because a gap that names what a shader needs is worth more than a
+silence, which is the argument stage 7 made about the struct.
 
 `radians` arriving as a *user function* is the cheapest row here: it is a GLSL
 builtin the intrinsic table simply does not name. `saturate` is a different
 thing entirely — it is a *helper the shader wrote three of*, one per argument
 type, and since stage 11 an overload set is not something this inlines at all.
 The expensive one is at the top and is not close: a `return` in the middle of a
-function is how a real shader says "not this pixel", and no amount of unrolling
-or inlining flattens one.
+function is how a real shader says "not this pixel", and inlining does not
+flatten one.
 
 Over the corpus in this repository — 20 in `Corpus/`, 8 in `Corpus/Imported/`
 and `Apps/PlasmaPort/Plasma.glsl` — the same report is empty, 29 of 29, which is
@@ -864,16 +898,18 @@ shaders here were written to convert or picked because they did.
 
 The second table is the one stage 10 discovered, and it exists because the first
 one cannot see it. Of the 99 shaders that convert, the emitted C++ is fed to a
-compiler; **95 of them build and 4 do not**. Grouped by the first error, with
+compiler; **96 of them build and 3 do not**. Grouped by the first error, with
 `Unblocks` the number that would compile if this row alone went away:
 
 | Blocker | Shaders | Unblocks | Whose is it |
 | --- | ---: | ---: | --- |
-| Invalid operands — a type inferred wrongly and carried into an operator | 2 | 2 | transpiler |
-| `no viable overloaded '='` — the same wrong type, one statement later | 2 | 2 | transpiler |
+| `no viable overloaded '='` — a type inferred wrongly, one statement later | 2 | 2 | transpiler |
+| Invalid operands — the same wrong type, carried into an operator | 1 | 1 | transpiler |
 
 Nothing in eacp's column is left in it, which has not been true before. What
-stage 11 was worth, one piece at a time, and what stage 12 was worth after it:
+stage 11 was worth, one piece at a time, and what stage 12 was worth after it —
+the history of those two stages rather than a running total, since the current
+figures are the two tables above:
 
 | After | Converted | Compiled |
 | --- | ---: | ---: |
@@ -902,9 +938,9 @@ number from one that has only ever been produced once.
 This is still the table to take seriously, because every row in it is a shader
 the coverage report had already called converted. It is also the reason
 `Apps/Gallery` compiles every port rather than a chosen few: the report cannot
-fail a build, and a compiler can — and since stage 12 that goes for the 95 as
-well as the 28, which is 95 headers that compiled one at a time being made to
-compile together.
+fail a build, and a compiler can — and since stage 12 that goes for the measured
+half as well as the 28, which is 96 headers that compiled one at a time being
+made to compile together.
 
 The last row that came off it was `Surface.glsl`'s, in stage 8, and it came off
 without eacp changing at all — see below, because that is the interesting part,
@@ -1005,9 +1041,8 @@ rerun after every change. That is what the scan step is for.
 The point of the exercise, so it is worth recording what it has found.
 
 **Scalar broadcast for `+` and `-`** (stage 2). Every shader that sums an offset
-into a coordinate — `uv + iTime`, `p - speed` — failed to compile once loops
-unrolled, and not for any reason the transpiler could see: it emitted exactly
-what the source said. eacp broadcast a scalar *handle* across a vector for `*`
+into a coordinate — `uv + iTime`, `p - speed` — failed to compile, and not for
+any reason the transpiler could see: it emitted exactly what the source said. eacp broadcast a scalar *handle* across a vector for `*`
 and `/` but not for `+` or `-`, and had no `scalar / vector` at all, so
 `uv * iTime` compiled and `uv + iTime` did not. Both shading languages the EDSL
 emits into broadcast all four.
@@ -1083,8 +1118,8 @@ language will take.
 
 **A loop condition cannot be one of the emitter's shared locals** (stage 5). The
 emitter names any subtree it would otherwise evaluate more than once, which is
-what keeps an unrolled march linear — and applied to a `while` header it is a
-loop that never ends, because the name is bound once above the loop and the
+what keeps a long body linear — and applied to a `while` header it is a loop
+that never ends, because the name is bound once above the loop and the
 condition is exactly the thing the body changes. Conditions now print into the
 header, and every name open in the enclosing block is given up at a loop.
 
@@ -1338,6 +1373,37 @@ And `min`/`max` on integers took the literal on the right only, for no reason
 other than that nobody had written the other one; a shader writes `max(0, -i)`
 as readily as `max(i, 0)`.
 
+**The emitter walked a graph as though it were a tree** (stage 13). The first
+gap the corpus found that is not about what eacp can express but about what it
+can express *in finite time*, and it was found by a person pressing the right
+arrow: the gallery froze on entry 43 of 123, iq's `Dt3SDH`, and never came back.
+
+Two bugs, one shape. `referencesUniform` — which decides whether a stage has to
+declare the uniform block — recursed over the expression graph with no visited
+set at all. The emitter's entire reason for existing is that a subtree used
+twice is stored once, so what it walks is a DAG, and a DAG walked as a tree is
+**exponential in the sharing** rather than linear in the nodes. Worse, it was
+called once per statement root, each call starting over. Beside it, `dropStale`
+— the rule that gives up a name when a statement writes a variable that name
+read — allocated and zeroed a buffer the size of the whole graph *per open name
+per statement*, so the bookkeeping cost the entire graph however small the
+subtree it then looked at.
+
+The fixes are a visited set that is shared across a stage's roots, and a marker
+that is a stamp rather than a flag, so starting a walk over is a counter
+increment rather than clearing the graph. `Dt3SDH` went from not finishing to
+finishing, and the slowest entry in the gallery is now 120 milliseconds — all
+124 of them are ready in a second and a half together.
+
+Neither bug could show on a small shader, which is why ten stages of them did
+not: this is what a corpus is for.
+
+The generation counter starting level with the buffer it stamps into was worth
+18 failing tests in eacp's own suite the first time round — a fresh set in which
+every node already counts as visited is not a walk that gives the wrong answer
+slowly, it is one that gives it immediately. `GPUTests` caught it, which is the
+argument for running the dependency's tests and not only one's own.
+
 **A swizzle binds tighter than any operator** (stage 9). Emitting `.x()` after
 an object that emitted as an operator produced `a + b.x()` where the source said
 `(a + b).x`, which is a different value and a perfectly plausible one. It had
@@ -1402,13 +1468,6 @@ something else. Two of the four shaders this took off the converted list were in
 exactly that state. It is reported as the helper it could not inline, which is
 what it is, rather than as a row of its own saying the same thing about the same
 name.
-
-Stage 5 found one of its own, and a worse-shaped one: the check for whether a
-loop can be unrolled was asked of the loop about *itself*, but treated its own
-body as a nested one — where a jump belongs to the inner loop and can be
-ignored. So a `for` with a `break` unrolled sixty-four times and dropped the
-break on every copy. It converted, it compiled, and it was wrong. That is the
-failure mode `Tests/Runtime/ControlFlowTests` exists for.
 
 Stage 6 found two more here. The first is that a literal has no type of its own:
 `index & 3` needs a `3` and the `int(uv.x * 4.0)` it was built from still needs
@@ -1681,13 +1740,24 @@ it had been pointed at: stage 11 took the shaders that convert *and* compile
 from 51 to 95, and this layer could only ever see the 28 that live here, because
 the gallery's port list was written by hand and the rest are files a licence
 keeps out of this repository. Stage 12 closed that half of it: building the
-gallery goes and gets them, all 123 are in the one app, and the 95 say in the
+gallery goes and gets them, all 124 are in the one app, and the 96 say in the
 title bar that they are the measured ones.
 
-What it did not close, and what is worth saying plainly, is that a count of 95
+What it did not close, and what is worth saying plainly, is that a count of 96
 is still a claim about compilers rather than about pictures. This layer is a
-person, and a person has now looked at one of the 95. The other 94 are one
+person, and a person has now looked at one of the 96. The other 95 are one
 keypress each and nobody's afternoon yet.
+
+It paid for itself before that afternoon happened, though, which is the
+argument for it. The first thing anybody did with the measured half was press
+the right arrow, and the app froze on the 43rd and never came back — two walks
+in eacp's emitter that were superlinear in the size of the graph, one of them
+exponential, neither reachable by a shader small enough for anybody to have
+written by hand. No report says a shader takes forever to emit. No compiler says
+it either: the scan had already passed all 96, because `-fsyntax-only` on the
+generated header type-checks the C++ and never builds the graph it would build.
+It took the weakest and least automatable layer, doing the one thing it is
+for.
 
 For the imported shaders there is a fifth check available and no way to automate
 it: the shader's own page. `Corpus/Imported/3l23RK.glsl` is iq's *Pie - distance

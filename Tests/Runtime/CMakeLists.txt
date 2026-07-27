@@ -30,9 +30,9 @@ shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Kale
 shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Tunnel.glsl NAME Tunnel)
 shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Channels.glsl NAME Channels)
 
-# Stage 5: the march unrolling cannot reach - a mutable distance, a loop with a
-# data-dependent break, and a helper that had to be inlined around both - and
-# the escape-time loop with the rest of the statement vocabulary around it.
+# Stage 5: the march that needed statements - a mutable distance, a loop with a
+# data-dependent break, and a helper inlined around both - and the escape-time
+# loop with the rest of the statement vocabulary around it.
 shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Raymarch.glsl NAME Raymarch)
 shadertoy_add_port(RuntimeTests GLSL ${CMAKE_CURRENT_LIST_DIR}/../../Corpus/Mandelbrot.glsl NAME Mandelbrot)
 

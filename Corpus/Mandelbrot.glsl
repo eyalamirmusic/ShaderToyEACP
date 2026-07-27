@@ -1,6 +1,6 @@
 // The escape-time loop stage 5 exists for: how many steps a pixel takes is a
-// property of the pixel, so unrolling cannot reach this however small the bound
-// is. Around it, the rest of what statements buy - a bool the loop sets and the
+// property of the pixel, so nothing decided on paper reaches this however small
+// the bound is. Around it, the rest of what statements buy - a bool the loop sets and the
 // shading reads, a colour written by both sides of an if/else and read after
 // it, a ternary, and two comparisons joined by a connective.
 vec2 square(vec2 z)

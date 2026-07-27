@@ -405,10 +405,10 @@ private:
     // --- statements ------------------------------------------------------
 
     // `int` and `uint` are deliberately silent here. A loop counter is the
-    // overwhelming majority of them and it becomes a literal the moment the loop
-    // unrolls, so reporting the type at the parse would fill the coverage table
-    // with gaps that lowering closes on its own; the ones that survive are
-    // reported there instead.
+    // overwhelming majority of them and the EDSL has had a signed integer since
+    // stage 6, so reporting the type at the parse would fill the coverage table
+    // with gaps that are not gaps; the ones that survive are reported by the
+    // lowering instead.
     void parseDeclaration(Vector<Statement>& into)
     {
         match("const");
