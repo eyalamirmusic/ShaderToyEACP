@@ -172,7 +172,7 @@ auto tFetchedTexelsAreTheStoredColours = test("Channel/fetchReadsTheTexels") = [
     auto shader = FetchedChannel {};
     shader.iChannel0 = texture;
 
-    check(shader.iChannel0.resolution.value == std::array {2.0f, 1.0f, 1.0f});
+    check(shader.iChannel0.resolution.value == EA::Array {2.0f, 1.0f, 1.0f});
 
     auto image = render(shader);
 
