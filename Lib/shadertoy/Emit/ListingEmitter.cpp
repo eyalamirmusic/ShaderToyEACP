@@ -6,14 +6,15 @@ namespace Shadertoy::Emit
 {
 namespace
 {
-// A byte as it has to be spelled inside a narrow string literal.
+// A byte as it has to be spelled inside a narrow string literal, given the one
+// before it.
 //
 // Anything outside plain printable ASCII goes out octal rather than hex, and
 // that is the whole reason this is not two lines: a hex escape has no length
 // limit, so "\xe2" followed by an 'f' is one escape and not two, and a comment
 // with an accented letter in it silently becomes a different string. An octal
 // escape is at most three digits, so it always ends where it is written.
-void appendEscaped(std::string& out, char character)
+void appendEscaped(std::string& out, char character, char previous)
 {
     const auto byte = (unsigned char) character;
 
@@ -27,6 +28,16 @@ void appendEscaped(std::string& out, char character)
     if (character == '\t')
     {
         out += "\\t";
+        return;
+    }
+
+    // `??=` and its eight relatives are trigraphs, which a compiler still
+    // honouring them reads as one character and one that does not warns about.
+    // A question mark following another is escaped and no other is, so the
+    // ternary a shader is full of keeps the `? :` it was written with.
+    if (character == '?' && previous == '?')
+    {
+        out += "\\?";
         return;
     }
 
@@ -47,9 +58,13 @@ void appendEscaped(std::string& out, char character)
 std::string quoted(const std::string& line)
 {
     auto out = std::string {"\""};
+    auto previous = char {};
 
     for (auto character: line)
-        appendEscaped(out, character);
+    {
+        appendEscaped(out, character, previous);
+        previous = character;
+    }
 
     return out + "\"";
 }
