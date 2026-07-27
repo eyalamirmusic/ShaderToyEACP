@@ -106,11 +106,28 @@ beside it and is still a gap - GLSL has one, MSL and HLSL do not.
 Nothing in the corpus walks into a wall today, which is a corpus that has run
 out of things to say rather than an EDSL that has run out of gaps. Eighteen
 shaders written for this project is not the thousands the counts were meant to
-rank - what closes that is fetching real Shadertoys by id. `ids.txt` and
-`build/Tools/Corpus/shadertoy-fetch` are what that takes: the ids are committed
-and the shaders are not, since their default licence makes redistribution a real
-question. What comes back lands in `Corpus/External`, which is gitignored, and
-is measured with the same report:
+rank - what closes that is real Shadertoys, and `Corpus/External` is 204 of
+them, committed. Every one carries an explicit permissive licence and a header
+naming its author, its page and that licence, which is what makes shipping them
+here possible; the dataset they came from recorded all three. So a clone is
+measured without asking anything of the network:
+
+```bash
+build/Tools/Scan/shadertoy-scan Corpus/External
+```
+
+Growing it past those 204 is the fetchers, and only that. `--dataset` re-reads
+the published corpus and writes what is missing, which on an up-to-date clone is
+nothing:
+
+```bash
+cmake --build build --target corpus-fetch
+```
+
+Pulling by id from Shadertoy's own API is the other half, and the one whose
+results stay out of the repository: those arrive under the site's default CC
+BY-NC-SA 3.0 unless an author says otherwise, which is a licence that makes
+redistribution a real question rather than a formality.
 
 ```bash
 export SHADERTOY_API_KEY=...            # https://www.shadertoy.com/myapps

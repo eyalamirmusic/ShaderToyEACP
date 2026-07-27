@@ -4,13 +4,17 @@ Real Shadertoys, by people who are not us. Everything in `Corpus/` beside this
 directory was written for this project and converts because it was written to;
 these were not, which is the only reason they are worth having.
 
-## Why these can be here at all
+## Why these are separate from `Corpus/External`
 
-Shadertoy's default licence is CC BY-NC-SA 3.0, which is why the rest of the
-outside corpus is fetched rather than vendored — see the licensing note in the
-root README. Every shader here is the exception the same note already allows:
-each one carries an explicit permissive licence in its own source, and that
-header is left exactly as its author wrote it.
+Not licensing — `Corpus/External` is committed too, and all 204 of those carry
+an explicit permissive licence in the same way these eight do. The difference is
+what the build promises about them. These are added by `shadertoy_add_port`, so
+each one fails the build the day it stops compiling; the corpus next door is
+added by `shadertoy_add_measured_corpus`, which measures what compiles and
+cannot hold that rule, since most of it does not convert at all.
+
+So these are the ones held by hand, and the header of each is left exactly as
+its author wrote it.
 
 | Shader | Author | Licence |
 | --- | --- | --- |

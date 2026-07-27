@@ -462,10 +462,11 @@ basis by transposing it, and until now a `mat3` could be built and multiplied
 and nothing else. `inverse` stays a gap and is the more interesting half of the
 entry — see below.
 
-And the corpus itself: `Corpus/ids.txt` and `shadertoy-fetch`, which turn a list
-of Shadertoy ids into files under a gitignored `Corpus/External`. The ids are
-committed and the shaders are not, which is what the licence note at the bottom
-has been about since stage 1. A shader with buffers comes back as several files,
+And the corpus itself: `Corpus/External`, 204 real Shadertoys committed beside
+the ones written here, and `shadertoy-fetch`, which turns a list of ids in
+`Corpus/ids.txt` into more of them. What the API path pulls stays out of the
+repository, which is what the licence note at the bottom has been about since
+stage 1. A shader with buffers comes back as several files,
 exactly as `TrailBuffer.glsl` and `TrailImage.glsl` are, and a `common` pass
 comes back as the prelude it is rather than as a file of its own.
 
@@ -860,11 +861,11 @@ measured entry says so in the title bar. They are different claims: the 30 fail
 this build if one of them stops compiling, and the 142 are shaders a scan says a
 compiler accepted and nobody has looked at.
 
-The fetch reaches the network the first time and never again while the shaders
-are there, and it writes to `Corpus/External`, so several build directories
-share the one copy. The scan is per build directory, because what converts and
-then compiles is a fact about that compiler and those flags — and it re-runs
-whenever the transpiler it is measuring changes, which is the only way the
+No fetch is involved: the shaders are committed, so every build directory scans
+the same 204 and a machine with no network measures what every other machine
+does. The scan is per build directory, because what converts and then compiles
+is a fact about that compiler and those flags — and it re-runs whenever the
+shaders or the transpiler it is measuring change, which is the only way the
 number on the title bar is ever the current one.
 
 Or go past the 204 and measure Shadertoy itself, which is what the counts were
@@ -1947,10 +1948,18 @@ of the 204 in `Vipitis/Shadereval-inputs` carries an explicit licence — 144 MI
 `libpng` — because that is what its collector recorded beside each shader, and
 that licence comes back with the shader rather than being looked up afterwards.
 It is written into the file's own header and into `.licences` beside them, which
-is the record that decides what may ever be committed here rather than only
-measured. `Corpus/External` is gitignored all the same: a permissive licence
-makes committing a shader *possible*, and the eight in `Corpus/Imported/` are
-the ones where somebody decided to.
+is the record that decides what may be committed here rather than only measured.
+All 204 pass that test, so all 204 are committed.
+
+They were gitignored for a while on the grounds that a permissive licence makes
+committing a shader *possible* rather than obligatory, and that only the eight
+in `Corpus/Imported/` had been decided on. What that cost was the thing the
+licence was never in the way of: a clone had 29 shaders, the other 204 arrived
+only if a build reached HuggingFace and got an answer, and a machine that did
+not was quietly measuring a corpus an order of magnitude smaller than the one
+the tables here report. A number nobody else can reproduce is the failure this
+whole section exists to avoid, so the shaders are in the repository, and
+`shadertoy-fetch` grows the corpus rather than supplying it.
 
 The same applies to the images a channel reads: Shadertoy's own textures are
 not ours to ship either, so `Apps/TunnelPort` generates the brick pattern it

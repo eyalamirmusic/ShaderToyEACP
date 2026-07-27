@@ -33,12 +33,16 @@ xcschememanagement.plist
 workspace.xml
 xcuserdata
 
-# Fetched Shadertoys: a list of ids is committed, the shaders themselves are
-# not - their default licence makes redistribution a real question. See
-# Corpus/ids.txt and Tools/Corpus.
-/Corpus/External
+# Corpus/External is committed, not ignored. Every shader in it carries an
+# explicit permissive licence and the header naming its author, its page and
+# that licence - so a clone has the corpus the tables are measured over without
+# asking anything of the network. What the API fetcher pulls by id is the case
+# that stays out: those arrive under Shadertoy's default CC BY-NC-SA 3.0 unless
+# an author says otherwise. See Corpus/README.md.
+/Corpus/External/.quota
+/Corpus/External/.refused
 
 # What shadertoy-scan leaves behind: a header per shader that converted, and
-# the registration naming the ones that then compiled. It is a measurement of
-# Corpus/External, which is not committed either.
+# the registration naming the ones that then compiled. A measurement of this
+# compiler and these flags, so it belongs to a build directory and not here.
 /scan

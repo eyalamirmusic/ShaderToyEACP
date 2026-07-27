@@ -46,50 +46,41 @@ function(shadertoy_add_port target)
     target_include_directories(${target} PRIVATE "${directory}")
 endfunction()
 
-# The whole of "Measure a corpus" as a build step: fetch the shaders the
-# coverage tables are measured over, scan them, register what survived, and put
-# the registration on the target's include path.
+# The whole of "Measure a corpus" as a build step: scan the shaders the coverage
+# tables are measured over, register what survived, and put the registration on
+# the target's include path.
 #
 #   shadertoy_add_measured_corpus(Gallery)
 #
-# It exists because the three commands are otherwise three manual steps and a
-# cache variable per build directory, which is a way to be quietly looking at
-# 28 shaders while believing you are looking at 123. Here the build knows
-# whether it has them.
+# What it adds is measured rather than guaranteed, which is why it is a
+# different function from the one above: a port added by shadertoy_add_port
+# fails the build if it stops compiling, and a corpus most of which does not
+# convert cannot keep that rule.
 #
-# What it adds is measured rather than guaranteed, which is why it is off by
-# default and why it is a different function from the one above: a port added
-# by shadertoy_add_port fails the build if it stops compiling, and a corpus
-# most of which does not convert cannot keep that rule.
+# It does not fetch. The corpus is committed, so a clone has every shader this
+# measures before it has a build directory - which is the only version of this
+# that cannot quietly show 28 shaders while claiming 204, since there is no
+# step left to have silently not happened. Growing the corpus past what is
+# committed is `shadertoy-fetch`, run by hand; see the corpus-fetch target.
 #
-# The two steps are separate commands on purpose. Fetching writes into the
-# source tree's corpus directory, which is gitignored and shared between build
-# directories, so it happens once however many builds want it - and never again
-# while the shaders are there. Scanning writes per build directory, because what
-# converts and then compiles is a fact about this compiler and these flags, and
-# re-runs whenever the transpiler it is measuring changes.
+# Scanning stays per build directory, because what converts and then compiles is
+# a fact about this compiler and these flags, and re-runs whenever the shaders or
+# the transpiler being measured change.
 function(shadertoy_add_measured_corpus target)
     set(shaders "${CMAKE_SOURCE_DIR}/Corpus/External")
     set(registered "${CMAKE_BINARY_DIR}/MeasuredCorpus")
 
-    # .licences is what the fetch leaves beside the shaders, so depending on it
-    # is depending on the fetch having happened rather than on a stamp file
-    # invented to stand for it.
-    add_custom_command(
-            OUTPUT "${shaders}/.licences"
-            COMMAND shadertoy-fetch --dataset --out "${shaders}"
-            DEPENDS shadertoy-fetch
-            COMMENT "Fetching the corpus the coverage tables are measured over"
-            VERBATIM
-            USES_TERMINAL)
+    # The shaders themselves are the dependency: adding one to the corpus is
+    # what should re-measure it, and CONFIGURE_DEPENDS is what notices.
+    file(GLOB corpus CONFIGURE_DEPENDS "${shaders}/*.glsl")
 
     add_custom_command(
             OUTPUT "${registered}/ExternalCorpus.h"
             COMMAND shadertoy-scan "${shaders}"
                     --out "${registered}"
                     --register "${registered}/Survivors.cmake"
-            DEPENDS shadertoy-scan "${shaders}/.licences"
-            COMMENT "Scanning it, and registering what converts and compiles"
+            DEPENDS shadertoy-scan ${corpus}
+            COMMENT "Scanning the measured corpus, and registering what compiles"
             VERBATIM
             USES_TERMINAL)
 
