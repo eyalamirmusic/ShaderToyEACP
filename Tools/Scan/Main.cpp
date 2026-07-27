@@ -87,8 +87,10 @@ void printUsage()
         << "reported is already the answer. One that converts and does not\n"
         << "compile is the case the coverage report cannot see, since by then\n"
         << "it has already said the shader converted.\n\n"
-        << "What --register writes is what a gallery can then be pointed at:\n\n"
-        << "  cmake -B build -DSHADERTOY_EXTERNAL_CORPUS=<the --out dir>\n";
+        << "What --register writes is two files: a CMake list at <file>, and\n"
+        << "an ExternalCorpus.h beside the headers holding their includes and\n"
+        << "an entry table. Apps/Gallery runs all of this for itself, so this\n"
+        << "is the command to reach for over a corpus that is not that one.\n";
 }
 } // namespace
 

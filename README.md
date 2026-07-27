@@ -612,18 +612,22 @@ first and then been compiled against it — a compile result attributed to the
 wrong shader, which is the one failure a coverage table cannot survive. Nothing
 in these 204 collides; the fix is that nothing ever can.
 
-**A Gallery that takes a directory.** Beside the committed list rather than
+**A Gallery with all of them in it.** Beside the committed list rather than
 instead of it, because the two mean different things and only one of them can
 keep the rule that makes it worth having. The 29 ports built here — 28 entries,
 since a two-pass shader is one of them — fail the build if any of them converts
-and will not compile, which is the whole reason each is in that target. An
-external corpus cannot keep that rule: 105 of the 204 do not convert and 4 more
-do not compile, so a build that insisted would never run. So
-`-DSHADERTOY_EXTERNAL_CORPUS=<dir>` adds whatever the registration says
-survived, off by default, and the gallery has a guaranteed half and a measured
-half — 123 entries, and the measured ones say so in the title bar, because which
-half a doubtful frame belongs to is the first thing anybody looking at one wants
-to know.
+and will not compile, which is the whole reason each is in that target. The
+fetched corpus cannot keep that rule: 105 of the 204 do not convert and 4 more
+do not compile, so a build that insisted would never run.
+
+So the gallery has a guaranteed half and a measured half — 123 entries — and
+what tells them apart is the title bar rather than the build, since which half a
+doubtful frame belongs to is the first thing anybody looking at one wants to
+know. Getting the second half is no switch and no manual step: building the
+target fetches the corpus, scans it, registers what survived and compiles that
+in. It was two switches for about an hour, and the hour was enough to build the
+gallery in the wrong directory and get 28 shaders and no explanation. A count
+that depends on how a build directory was configured is not a count.
 
 Building it is the second check on the same claim, and not the same check: the
 scan compiles each header alone, and this compiles all 95 into one translation
@@ -757,23 +761,29 @@ renders something plausible. The gallery is also the only target that compiles
 every port, so a shader the transpiler is happy with and a C++ compiler is not
 fails this build rather than going unnoticed.
 
-Those 28 entries are every shader this repository holds, and they are not the 95
-that convert and compile: the other 67 are shaders whose licence keeps them off
-this repository. Point the build at a scanned corpus and they come too:
+Those 28 entries are every shader this repository holds, and the other 95 are
+shaders whose licence keeps them off it — so the build goes and gets them.
+Building `Gallery` fetches the corpus, scans it, registers what survived and
+compiles that in, which is why the app says this on the way up:
 
-```bash
-cmake -B build -DSHADERTOY_EXTERNAL_CORPUS=$PWD/scan
-cmake --build build --target Gallery
-build/Apps/Gallery/Gallery.app/Contents/MacOS/Gallery
-# 123 shaders: 28 this repository holds and this build guarantees,
-# 95 a scan measured.
+```
+123 shaders: 28 this repository holds and this build guarantees,
+95 a scan measured.
 ```
 
-The directory is the one the scan left its headers in, and what it adds is
-whatever `--register` wrote there. The two halves stay apart on screen — a
-measured entry says so in the title bar — because they are different claims:
-the 28 fail this build if one of them stops compiling, and the 95 are shaders a
-scan says a compiler accepted and nobody has looked at.
+There is no switch for it. A gallery that shows some of the shaders depending on
+how a build directory was configured is a gallery nobody can trust the count of,
+and the two halves are kept apart where it matters instead — on screen, since a
+measured entry says so in the title bar. They are different claims: the 28 fail
+this build if one of them stops compiling, and the 95 are shaders a scan says a
+compiler accepted and nobody has looked at.
+
+The fetch reaches the network the first time and never again while the shaders
+are there, and it writes to `Corpus/External`, so several build directories
+share the one copy. The scan is per build directory, because what converts and
+then compiles is a fact about that compiler and those flags — and it re-runs
+whenever the transpiler it is measuring changes, which is the only way the
+number on the title bar is ever the current one.
 
 Or go past the 204 and measure Shadertoy itself, which is what the counts were
 built to rank and what the API is for. The ids are committed and the shaders are
@@ -1670,8 +1680,8 @@ It used to be the layer with the widest gap between what it could catch and what
 it had been pointed at: stage 11 took the shaders that convert *and* compile
 from 51 to 95, and this layer could only ever see the 28 that live here, because
 the gallery's port list was written by hand and the rest are files a licence
-keeps out of this repository. Stage 12 closed that half of it —
-`-DSHADERTOY_EXTERNAL_CORPUS` puts all 123 in one app, and the 95 say in the
+keeps out of this repository. Stage 12 closed that half of it: building the
+gallery goes and gets them, all 123 are in the one app, and the 95 say in the
 title bar that they are the measured ones.
 
 What it did not close, and what is worth saying plainly, is that a count of 95
@@ -1704,17 +1714,11 @@ cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Debug -DSHADERTOY_UNITY_BUILD=OFF \
 Use `$HOME`, not `~` — CMake does not expand a tilde, and it configures against a
 non-existent path instead of failing.
 
-One option beyond those two, and it is off by default because what it adds is
-measured rather than guaranteed:
-
-```bash
-cmake -B build -DSHADERTOY_EXTERNAL_CORPUS=$PWD/scan
-```
-
-`<dir>` is where `shadertoy-scan --register` left its headers, and every shader
-there that converted and compiled is added to `Apps/Gallery` beside the ones
-this repository holds. The build fails if the directory holds no registration,
-and says which command writes one.
+No option beyond those two, and in particular none for the measured corpus:
+building `Apps/Gallery` fetches it, scans it and adds what survived, the first
+time and not again while the shaders are there. It is the one target that
+reaches the network, and the only one that does anything a plain `--target
+Gallery` does not.
 
 Outputs:
 

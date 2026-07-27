@@ -33,13 +33,12 @@
 #include <SftVXRc.h>
 #include <SsdVyWt.h>
 
-// The measured half, when the build was pointed at a directory of it with
-// -DSHADERTOY_EXTERNAL_CORPUS. It is one file written by shadertoy-scan
-// --register: the includes for every shader of a corpus that converted and
-// then compiled, and an X-macro naming them.
-#if __has_include(<ExternalCorpus.h>)
+// The measured half, written by shadertoy-scan --register during this build:
+// the includes for every shader of the fetched corpus that converted and then
+// compiled, and an X-macro naming them. Included unconditionally, because a
+// gallery quietly missing two thirds of its shaders is not something a build
+// should be able to arrive at.
 #include <ExternalCorpus.h>
-#endif
 
 using namespace eacp;
 using namespace Shadertoy;
@@ -187,16 +186,14 @@ Entry entryFor(std::string name)
 // What can be said about these is what shadertoy-scan measured - they converted
 // and a compiler took them - and that is a weaker claim kept deliberately
 // apart from the stronger one.
-void addExternalTo([[maybe_unused]] Vector<Entry>& entries)
+void addExternalTo(Vector<Entry>& entries)
 {
-#ifdef SHADERTOY_EXTERNAL_PORTS
 #define SHADERTOY_GALLERY_ENTRY(Port, label)                                        \
     entries.add({label, [] { return makeOwned<Unwired<Ports::Port>>(); }, true});
 
     SHADERTOY_EXTERNAL_PORTS(SHADERTOY_GALLERY_ENTRY)
 
 #undef SHADERTOY_GALLERY_ENTRY
-#endif
 }
 
 // Ordered as the stages that opened them, which is also roughly simplest
