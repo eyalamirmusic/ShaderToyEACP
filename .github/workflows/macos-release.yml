@@ -24,7 +24,7 @@ concurrency:
 jobs:
   build:
     name: Universal, signed and notarized
-    runs-on: macos-26-xlarge
+    runs-on: macos-latest
     timeout-minutes: 90
 
     env:
