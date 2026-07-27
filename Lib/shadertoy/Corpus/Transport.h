@@ -3,16 +3,8 @@
 #include <functional>
 #include <string>
 
-// The one thing either fetcher here needs a network for, and so the one thing
-// either of them replaces to be tested.
-//
-// There are two corpora and they are reached in two different ways. Shadertoy's
-// own API serves any shader its author marked Public+API, wants a key that wants
-// an account with Silver status, and is worth 1500 requests a month - so Fetch.h
-// is bookkeeping around a budget. A dataset somebody has already collected
-// through that API is a handful of unauthenticated requests over a public
-// endpoint, and Dataset.h is the paging around that. What the two share is
-// exactly this file: a request, whatever came back, and where to say so.
+// The one thing the fetcher needs a network for, and so the one thing it
+// replaces to be tested: a request, whatever came back, and where to say so.
 namespace Shadertoy::Corpus
 {
 struct Reply
@@ -32,10 +24,6 @@ using Transport = std::function<Reply(const std::string& url)>;
 Reply httpGet(const std::string& url);
 
 std::string percentEncoded(const std::string& text);
-
-// YYYY-MM-DD. The month of it is what the quota ledger is keyed on, and the
-// whole of it is what a block of discovered ids is stamped with.
-std::string today();
 
 void printNote(const std::string& text);
 void printWarning(const std::string& text);

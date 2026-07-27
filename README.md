@@ -58,8 +58,8 @@ which one to close next.
 > render-to-texture and float texture formats, so a Shadertoy can have buffers
 > that read what they left there last frame. Stage 9 is the corpus rather than
 > the EDSL: the preprocessor and the lvalue swizzle a real Shadertoy is written
-> with, a fetcher that pulls shaders by id, and `transpose`/`determinant` in
-> eacp for the one gap the reading turned up in its column. Stage 10 is the
+> with, and `transpose`/`determinant` in eacp for the one gap the reading turned
+> up in its column. Stage 10 is the
 > first time any of it was measured against shaders nobody here wrote: 204 real
 > Shadertoys, half of which convert, half of *those* compile, and what stops the
 > rest is a ranked list with eacp's own name at the top of it — which is what
@@ -109,16 +109,16 @@ Lib/shadertoy/Coverage/   both tables over one corpus: what does not convert,
                           and what converts and then does not compile - plus
                           the registration of what survived both
 Tools/Scan/               shadertoy-scan, which runs both over a directory
-Lib/shadertoy/Corpus/     Transport (one request, and whatever came back), the
-                          API and the books a 1500-request month needs, and the
-                          published dataset that needs no key at all
-                          (Json.h is what reads either one's replies)
-Tools/Corpus/             shadertoy-fetch, which pulls Shadertoys by id, or the
-                          whole corpus the counts are measured over
+Lib/shadertoy/Corpus/     Transport (one request, and whatever came back) and
+                          the published dataset that needs no key at all
+                          (Json.h is what reads its replies)
+Tools/Corpus/             shadertoy-fetch, which grows the corpus the counts are
+                          measured over
 Corpus/                   shaders the coverage report is measured against
-                          (ids.txt names the ones that are not committed)
-Corpus/Imported/          real Shadertoys, by other people, permissively licensed
-Tests/Corpus/             the bookkeeping of both fetchers, over stubbed servers
+Corpus/External/          204 real Shadertoys, committed, and the .licences that
+                          say what each may be used for
+Corpus/Imported/          the eight of those the build holds to compiling
+Tests/Corpus/             the fetcher's bookkeeping, over a stubbed server
 Tests/Coverage/           the scan's tabulation and its registration, over a
                           stubbed compiler
 Apps/Plasma/              a hand port, for comparison
@@ -462,56 +462,17 @@ basis by transposing it, and until now a `mat3` could be built and multiplied
 and nothing else. `inverse` stays a gap and is the more interesting half of the
 entry — see below.
 
-And the corpus itself: `Corpus/External`, 204 real Shadertoys committed beside
-the ones written here, and `shadertoy-fetch`, which turns a list of ids in
-`Corpus/ids.txt` into more of them. What the API path pulls stays out of the
-repository, which is what the licence note at the bottom has been about since
-stage 1. A shader with buffers comes back as several files,
-exactly as `TrailBuffer.glsl` and `TrailImage.glsl` are, and a `common` pass
-comes back as the prelude it is rather than as a file of its own.
-
-It is a C++ tool for the same reason everything else here is one: eacp already
-has an HTTP client and a JSON parser, so the fetcher costs one file and no
-dependency the project did not already have. The fetching itself is
-`Lib/shadertoy/Corpus`, so that `Tests/Corpus` can drive it without a key and
-without a socket; `Tools/Corpus` is the command line around it, and
-`shadertoy-corpus` is the one library here that talks to anything.
-
-The list ships empty, and what stands between it and the thousands the counts
-were meant to rank is worth stating precisely, because two of the three things
-in the way are not what they look like:
-
-- **The bot check is not one of them.** shadertoy.com sits behind a Cloudflare
-  challenge that `curl` cannot pass — it answers 403 to `robots.txt` — but
-  `/api/v1/` is exempt from it, and eacp's HTTP client reaches the API on the
-  first try. An unkeyed request comes back `{"Error":"Invalid key"}`, which is
-  the API refusing a request rather than the edge refusing a client.
-- **A key needs Silver or Gold status.** Creating an app at
-  [/myapps](https://www.shadertoy.com/myapps) is refused below that, and status
-  is earned by contributing to the community over time — shaders published,
-  likes, followers, how long the account has been around. A new account cannot
-  get a key by wanting one.
-- **A key is worth 1500 requests a month.** That is the number the fetcher is
-  built around, and the reason it is bookkeeping rather than a download loop.
-  The index costs one request however many ids come back, so a month buys
-  roughly 1499 shaders — and a corpus of thousands is a few months of runs that
-  never ask twice for what they already have.
-
-Only shaders whose author marked them **Public + API** come back at all, which
-is Shadertoy's own line: their terms say Public+API content "can also be
-accessible to third party applications", and plain Public content is not
-offered to third-party tools. So the corpus is what the API serves, and
-scraping the site for the rest is not on the table.
+And the corpus itself, which this stage went looking for and did not find: what
+Shadertoy's own API will serve wants credentials this project could not get, so
+the corpus stayed empty until stage 10 found one already published.
 
 **Stage 10 — shaders nobody here wrote, and looking at them.** *Done.* Stage 9
-built the fetcher and then could not run it, for the reason above: the key needs
-a status a new account does not have. What broke the deadlock was a corpus
-someone had already collected through the API — `Vipitis/Shadereval-inputs`, the
-input set of the ShaderEval benchmark, 204 distinct Shadertoys with the author
-and the licence beside each one, paged out as JSON by a public endpoint that
-wants no key at all. Every one of them carries an explicit permissive licence,
-which is why eight could be committed to `Corpus/Imported/` rather than only
-measured.
+went looking for a corpus and could not reach one. What broke the deadlock was a
+corpus someone had already collected and republished — `Vipitis/Shadereval-inputs`,
+the input set of the ShaderEval benchmark, 204 distinct Shadertoys with the
+author and the licence beside each one, paged out as JSON by a public endpoint
+that wants no key at all. Every one of them carries an explicit permissive
+licence, which is what lets all 204 be committed here rather than only measured.
 
 Running the report over all 204 is the first real reading the coverage table has
 had, and it produced a second one nobody had asked for. Half the shaders convert
@@ -587,11 +548,9 @@ than one nobody took.
 
 **A fetcher for the corpus the counts are measured over.** Every number in this
 README comes from `Vipitis/Shadereval-inputs`, and nothing here could ask for
-it. `shadertoy-fetch` talks to Shadertoy's own API, which wants a key that wants
-Silver status; the dataset is a different endpoint that wants no key at all, and
-the 204 had been pulled by hand. That made the input to the whole measurement
-the one thing the repository could not reproduce, which is a worse position than
-not having measured.
+it: the 204 had been pulled by hand. That made the input to the whole
+measurement the one thing the repository could not reproduce, which is a worse
+position than not having measured.
 
 It cost one more `Transport` behind bookkeeping of the same shape, and the
 factoring is the honest part: `Reply`, `Transport` and the rest now live in
@@ -868,36 +827,17 @@ is a fact about that compiler and those flags — and it re-runs whenever the
 shaders or the transpiler it is measuring change, which is the only way the
 number on the title bar is ever the current one.
 
-Or go past the 204 and measure Shadertoy itself, which is what the counts were
-built to rank and what the API is for. The ids are committed and the shaders are
-not:
+Going past the 204 is the fetcher, and only ever by hand:
 
 ```bash
-export SHADERTOY_API_KEY=...            # https://www.shadertoy.com/myapps
-build/Tools/Corpus/shadertoy-fetch      # everything in Corpus/ids.txt
+cmake --build build --target corpus-fetch
 build/Tools/Transpile/shadertoy-transpile --report Corpus/External/*.glsl
 ```
 
-That is the other fetcher, and the one with a budget: it fills the same
-directory `--dataset` does, so the two accrete into one corpus rather than
-competing for it.
-
-Filling the list is the same tool: `--list <n>` asks the API's index for ids
-and adds the new ones to `Corpus/ids.txt`, `--query <term>` searches instead of
-taking the whole index, and `--sort` and `--filter` pass the API's own
-vocabulary through — `--filter multipass` is how to go looking for the buffer
-shaders rather than the popular ones.
-
-```bash
-build/Tools/Corpus/shadertoy-fetch --list 500 --sort newest
-build/Tools/Corpus/shadertoy-fetch --list 500 --ids-only   # one request, no shaders
-```
-
-A run never asks for a shader it already has, and never asks twice for one the
-API refused — `.quota` and `.refused` beside the shaders are what hold that
-line between runs, and `--budget` is what a month is allowed to spend. When the
-budget runs out the rest stay on the list, which is how a corpus larger than
-one month's requests gets built at all.
+It re-reads the published dataset and writes what is missing, which on an
+up-to-date clone is nothing — five requests and no key. A different corpus is
+`--dataset <name>`, and `--rows <n>` takes a taste of one rather than the whole
+split.
 
 ## The coverage table
 
@@ -1912,7 +1852,7 @@ Outputs:
 - `build/Apps/TrailPort/TrailPort.app` — two transpiled ports, one a feedback buffer
 - `build/Apps/Gallery/Gallery.app` — the whole corpus, one shader at a time,
   and a scanned one beside it when the build was pointed at one
-- `build/Tools/Corpus/shadertoy-fetch` — the corpus fetcher, by id or by dataset
+- `build/Tools/Corpus/shadertoy-fetch` — the corpus fetcher, for growing it
 - `build/Tests/Glsl/GlslTests`, `build/Tests/Runtime/RuntimeTests`,
   `build/Tests/Corpus/CorpusTests`, `build/Tests/Coverage/CoverageTests`
 
@@ -1920,30 +1860,17 @@ Outputs:
 
 Shadertoy's default licence is CC BY-NC-SA 3.0 unless an author states otherwise,
 and the non-commercial clause makes redistribution a real question rather than a
-formality. The corpus is therefore fetched on demand from a list of IDs rather
-than vendored, and only ports of self-authored or explicitly permissive shaders
-are committed here.
+formality. So nothing arrives here under that default: every shader committed to
+`Corpus/External` carries an explicit permissive licence instead, recorded by
+the collector who published the corpus and written into the file's own header.
 
-Since stage 9 that is machinery rather than a policy: `Corpus/ids.txt` is the
-list, `shadertoy-fetch` turns it into files under `Corpus/External`, and
-`.gitignore` keeps that directory out. The fetcher needs a key of your own in
-`SHADERTOY_API_KEY`, from [Shadertoy's apps
-page](https://www.shadertoy.com/myapps) — which refuses to create one unless
-the account has Silver or Gold status, earned by contributing to the community
-rather than by asking.
+That is why the corpus comes from a published dataset rather than from the site.
+Shadertoy serves shaders their authors marked **Public + API**, which their terms
+describe as the content "accessible to third party applications or services" — a
+permission to read, and not a licence to redistribute. Nothing taken that way
+could have been committed here, so nothing here is taken that way.
 
-The author's own setting is the other half of it, and the fetcher inherits it
-for free: the API serves only what its author marked **Public + API**, and
-Shadertoy's terms are explicit that this is the content "accessible to third
-party applications or services". A shader marked plain Public is deliberately
-not on offer to a tool like this one, and comes back as a refusal that
-`.refused` records and later runs skip. That is a line worth keeping on the
-right side of — the site is reachable in a browser, and taking what the API
-declines to serve would be helping oneself to exactly what those authors opted
-out of.
-
-The dataset fetcher is under the same rule and keeps it the same way. Every one
-of the 204 in `Vipitis/Shadereval-inputs` carries an explicit licence — 144 MIT,
+Every one of the 204 in `Vipitis/Shadereval-inputs` carries an explicit licence — 144 MIT,
 51 CC0, and nine between `cc-by-4.0`, `cc-by-3.0`, `isc`, `apache-2.0` and
 `libpng` — because that is what its collector recorded beside each shader, and
 that licence comes back with the shader rather than being looked up afterwards.

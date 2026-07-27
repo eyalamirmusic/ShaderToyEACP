@@ -8,21 +8,18 @@
 #include <functional>
 #include <string>
 
-// The other way to fill Corpus/External, and the one every number in the README
-// actually came from.
+// What grows Corpus/External, and where every number in the README came from:
+// Vipitis/Shadereval-inputs, the input set of the ShaderEval benchmark,
+// published with the id, the author and the licence beside each shader and
+// served by an endpoint that wants no key at all.
 //
-// Fetch.h talks to Shadertoy's own API, which wants a key that wants an account
-// with Silver status - so the corpus the coverage tables are measured over was
-// pulled by hand from somewhere else: Vipitis/Shadereval-inputs, the input set
-// of the ShaderEval benchmark, whose author had already collected it through
-// that API and published it with the id, the author and the licence beside each
-// shader. It is served by an endpoint that wants no key at all.
+// The corpus is committed, so nothing needs this to have the shaders - it is
+// here so that the set can be regenerated and extended. A table nobody else can
+// regenerate is a table nobody else can check, which is a worse position than
+// not having measured.
 //
-// That makes it the one thing the measurement could not reproduce, which is a
-// worse position than not having measured: a table nobody else can regenerate
-// is a table nobody else can check. This is that gap closed, and it costs one
-// more Transport behind bookkeeping of the same shape - page the rows, keep the
-// first complete copy of each id, and never rewrite what is already there.
+// The bookkeeping is the whole of it: page the rows, keep the first complete
+// copy of each id, and never rewrite what is already there.
 namespace Shadertoy::Corpus::Dataset
 {
 using eacp::Vector;

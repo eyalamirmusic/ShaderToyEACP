@@ -3,7 +3,6 @@
 #include <eacp/Network/HTTP/Http.h>
 
 #include <cctype>
-#include <chrono>
 #include <iostream>
 
 namespace Shadertoy::Corpus
@@ -38,20 +37,6 @@ std::string percentEncoded(const std::string& text)
     }
 
     return encoded;
-}
-
-std::string today()
-{
-    auto now = std::chrono::system_clock::now();
-    auto days = std::chrono::floor<std::chrono::days>(now);
-    auto date = std::chrono::year_month_day {days};
-
-    auto text = std::to_string((int) date.year()) + "-";
-    text += (unsigned) date.month() < 10 ? "0" : "";
-    text += std::to_string((unsigned) date.month()) + "-";
-    text += (unsigned) date.day() < 10 ? "0" : "";
-
-    return text + std::to_string((unsigned) date.day());
 }
 
 void printNote(const std::string& text)

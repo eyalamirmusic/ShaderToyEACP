@@ -288,9 +288,9 @@ auto tDatasetOptions = test("Dataset/theDefaultIsTheMeasuredCorpus") = []
     check(named.requested);
     check(named.name == "someone/else");
 
-    // The API fetcher's own flags are not this one's, and a command line
-    // without --dataset is not a dataset run whatever else is on it.
-    auto api = Corpus::Dataset::parseOptions({"--list", "500"});
+    // A command line without --dataset is not a dataset run whatever else is
+    // on it, which is what keeps a typo from fetching the default corpus.
+    auto other = Corpus::Dataset::parseOptions({"--list", "500"});
 
-    check(!api.requested);
+    check(!other.requested);
 };

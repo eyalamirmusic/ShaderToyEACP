@@ -33,14 +33,10 @@ xcschememanagement.plist
 workspace.xml
 xcuserdata
 
-# Corpus/External is committed, not ignored. Every shader in it carries an
+# Corpus/External is committed, not ignored: every shader in it carries an
 # explicit permissive licence and the header naming its author, its page and
-# that licence - so a clone has the corpus the tables are measured over without
-# asking anything of the network. What the API fetcher pulls by id is the case
-# that stays out: those arrive under Shadertoy's default CC BY-NC-SA 3.0 unless
-# an author says otherwise. See Corpus/README.md.
-/Corpus/External/.quota
-/Corpus/External/.refused
+# that licence, so a clone has the corpus the tables are measured over without
+# asking anything of the network. See Corpus/README.md.
 
 # What shadertoy-scan leaves behind: a header per shader that converted, and
 # the registration naming the ones that then compiled. A measurement of this

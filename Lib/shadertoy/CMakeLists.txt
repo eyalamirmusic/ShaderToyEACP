@@ -30,7 +30,6 @@ target_link_libraries(shadertoy-corpus PUBLIC eacp-core PRIVATE eacp-network)
 
 target_sources(shadertoy-corpus PRIVATE
         Corpus/Transport.cpp
-        Corpus/Fetch.cpp
         Corpus/Dataset.cpp)
 
 set_default_target_setting(shadertoy-corpus)

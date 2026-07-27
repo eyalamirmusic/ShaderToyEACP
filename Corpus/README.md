@@ -124,25 +124,9 @@ nothing:
 cmake --build build --target corpus-fetch
 ```
 
-Pulling by id from Shadertoy's own API is the other half, and the one whose
-results stay out of the repository: those arrive under the site's default CC
-BY-NC-SA 3.0 unless an author says otherwise, which is a licence that makes
-redistribution a real question rather than a formality.
+A different corpus is `--dataset <name>`, and `--rows <n>` takes a taste of one
+rather than the whole split. Then measure what came back:
 
 ```bash
-export SHADERTOY_API_KEY=...            # https://www.shadertoy.com/myapps
-build/Tools/Corpus/shadertoy-fetch --list 500 --sort newest
 build/Tools/Transpile/shadertoy-transpile --report Corpus/External/*.glsl
 ```
-
-`--list` is how the list gets filled without picking ids by hand: one request
-buys as many ids as it asks for, and the new ones are appended to `ids.txt`
-under a line saying where and when they came from. Draining that list is the
-expensive half - a key is worth 1500 requests a month - so a run skips what is
-already in `Corpus/External`, skips what the API has already refused, and stops
-when the month's budget is gone rather than spending it twice on the same
-shader. The books it keeps are `.quota` and `.refused` in the output directory.
-
-Most of a real list will refuse: the API serves only what its author marked
-Public+API. That is a measurement rather than a fault, and it is why the exit
-code distinguishes a refusal from a failure.

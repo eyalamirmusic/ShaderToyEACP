@@ -1,9 +1,7 @@
-# The bookkeeping around both corpora: what a run asks the API for, what it
-# refuses to ask for twice, and what it does with a budget of 1500 requests a
-# month; and the paging over the published dataset that wants no key at all.
-# Both transports are a std::function, so none of it needs a key or a socket.
+# The bookkeeping around the corpus: paging the published dataset, keeping the
+# first complete copy of each id, and never rewriting what is already there. The
+# transport is a std::function, so none of it needs a socket.
 nano_add_executable(CorpusTests
         SOURCES
-            FetchTests.cpp
             DatasetTests.cpp
         TARGETS shadertoy-corpus)
